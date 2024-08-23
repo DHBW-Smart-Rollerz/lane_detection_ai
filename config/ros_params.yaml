@@ -1,0 +1,16 @@
+# This file contains example node parameters.
+ros2_example_node:
+  ros__parameters:
+    # Path of the debug image
+    image_path: 'resources/img/example.png'
+
+    # Path of the model
+    model_config_path: 'config/model.yaml'
+
+    # Topics for an example publisher and subscriber
+    image_topic: '/camera/undistorted'
+    result_topic: '/example/result'
+    debug_image_topic: '/example/debug_image'
+
+    # Some example value with a unit
+    example_value: 500 # in px

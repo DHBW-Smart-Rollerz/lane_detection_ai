@@ -1,0 +1,4 @@
+# Config of the model. Independent of the ROS system.
+
+model_path: 'models/model.pkl'
+# ...

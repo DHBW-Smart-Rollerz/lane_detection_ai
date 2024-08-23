@@ -1,0 +1,17 @@
+name: Build Test
+
+on:
+  push:
+    branches:
+      - jazzy*
+  pull_request:
+    branches:
+      - jazzy*
+
+jobs:
+  call-build-and-test:
+    uses: DHBW-Smart-Rollerz/smarty_workspace/.github/workflows/base.yaml@jazzy
+    with:
+      branch_pattern: 'jazzy*'
+      type: 'python'
+      package_name: 'ros2_example_package'
