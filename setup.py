@@ -3,7 +3,7 @@ import os
 
 from setuptools import find_packages, setup
 
-package_name = "ros2_example_package"
+package_name = "lane_detection_ai"
 
 setup(
     name=package_name,
@@ -18,9 +18,11 @@ setup(
         ),
         (
             os.path.join("share", package_name, "config"),
-            glob.glob(
-                os.path.join("config", "*.*")
-            ),  # TODO: Do we want to include all files?
+            glob.glob(os.path.join("config", "*.*")),
+        ),
+        (
+            os.path.join("share", package_name, "models"),
+            glob.glob(os.path.join("models", "*.*")),
         ),
     ],
     install_requires=["setuptools"],
@@ -32,7 +34,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            f"ros2_example_node = {package_name}.ros2_example_node:main",
+            f"lane_detection_ai_node = {package_name}.lane_detection_ai_node:main",
         ],
     },
 )

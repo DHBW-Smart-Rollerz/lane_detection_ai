@@ -1,3 +1,6 @@
-numpy
+addict
+numpy<2.0.0
 opencv_python
-rclpy
+pytest
+torch
+torchvision

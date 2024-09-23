@@ -26,21 +26,22 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "params_file",
                 default_value=os.path.join(
-                    get_package_share_directory("ros2_example_package"),
+                    get_package_share_directory("lane_detection_ai"),
                     "config",
                     "ros_params.yaml",
                 ),
                 description="Path to the ROS parameters file",
             ),
             Node(
-                package="ros2_example_package",
-                namespace="ros2_example",
-                executable="ros2_example_node",
-                name="ros2_example_node",
+                package="lane_detection_ai",
+                namespace="lane_detection_ai",
+                executable="lane_detection_ai_node",
+                name="lane_detection_ai_node",
                 parameters=[
                     {"debug": debug},
                     params_file,
                 ],
+                prefix="/home/smartrollerz/.pyenv/versions/3.12.5/bin/python3",
             ),
         ]
     )

@@ -1,16 +1,10 @@
 # This file contains example node parameters.
-ros2_example_node:
+lane_detection_ai_node:
   ros__parameters:
-    # Path of the debug image
-    image_path: 'resources/img/example.png'
-
-    # Path of the model
-    model_config_path: 'config/model.yaml'
+    # Path of the model config
+    model_config_path: "config/model_sparse_config.py"
 
     # Topics for an example publisher and subscriber
-    image_topic: '/camera/undistorted'
-    result_topic: '/example/result'
-    debug_image_topic: '/example/debug_image'
-
-    # Some example value with a unit
-    example_value: 500 # in px
+    image_topic: "/camera/undistorted"
+    result_topic: "/lane_detection/result"
+    debug_image_topic: "/lane_detection/debug_image"
