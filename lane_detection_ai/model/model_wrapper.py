@@ -6,17 +6,27 @@ import cv2
 import numpy as np
 import torch
 import torchvision.transforms as transforms
+from camera_preprocessing.transformation.calibration import Calibration
 from timing.timer import Timer
 
 from lane_detection_ai.model.utils.common import get_config, get_model
 
 
 class LaneDetectionAiModel:
-    """LaneDetectionAiModel class"""
+    """LaneDetectionAiModel class."""
 
     def __init__(self, base_path: str, model_config_path: str):
+        """
+        Initialize the LaneDetectionAiModel class.
+
+        Arguments:
+            base_path -- The base path to the model.
+            model_config_path -- The path to the model configuration file.
+        """
         torch.backends.cudnn.benchmark = True
 
+        self.camera_calibration = Calibration()
+        self.camera_calibration.setup()
         self.config = get_config(os.path.join(base_path, model_config_path))
         self.config.test_model = os.path.join(base_path, self.config.test_model)
         self.image_transform = transforms.Compose(
@@ -28,6 +38,12 @@ class LaneDetectionAiModel:
         self.net = self.load_model()
 
     def load_model(self):
+        """
+        Load the model.
+
+        Returns:
+            torch.nn.Module -- The model.
+        """
         self.config.batch_size = 1
 
         assert self.config.backbone in [
@@ -60,6 +76,15 @@ class LaneDetectionAiModel:
         return net
 
     def predict(self, image: np.ndarray) -> List[np.ndarray]:
+        """
+        Predict the lanes in the image.
+
+        Arguments:
+            image -- The image.
+
+        Returns:
+            List[np.ndarray] -- The lanes.
+        """
         with Timer(name="image_transform", filter_strength=40):
             image = cv2.resize(
                 image,
@@ -82,8 +107,8 @@ class LaneDetectionAiModel:
                 pred,
                 self.config.row_anchor,
                 self.config.col_anchor,
-                original_image_width=2064,
-                original_image_height=1544,
+                original_image_width=self.camera_calibration.target_size[0],
+                original_image_height=self.camera_calibration.target_size[1],
             )
 
         if len(coords[0]) > 0 and len(coords[3]) > 0:
@@ -124,6 +149,22 @@ class LaneDetectionAiModel:
         original_image_width=1640,
         original_image_height=590,
     ):
+        """
+        Convert the prediction to coordinates.
+
+        Arguments:
+            pred -- Prediction.
+            row_anchor -- Row anchor.
+            col_anchor -- Column anchor.
+
+        Keyword Arguments:
+            local_width -- Local Width (default: {1})
+            original_image_width -- Original Image width (default: {1640})
+            original_image_height -- Original Image height (default: {590})
+
+        Returns:
+            List[np.ndarray] -- The coordinates.
+        """
         batch_size, num_grid_row, num_cls_row, num_lane_row = pred["loc_row"].shape
         batch_size, num_grid_col, num_cls_col, num_lane_col = pred["loc_col"].shape
 
