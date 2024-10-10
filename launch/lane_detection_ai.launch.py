@@ -15,6 +15,7 @@ def generate_launch_description():
     Returns:
         LaunchDescription -- The launch description.
     """
+    python_executable = os.getenv("PYTHON_EXECUTABLE", "/usr/bin/python3")
     debug = LaunchConfiguration("debug")
     params_file = LaunchConfiguration("params_file")
 
@@ -41,7 +42,7 @@ def generate_launch_description():
                     {"debug": debug},
                     params_file,
                 ],
-                prefix="/home/smartrollerz/.pyenv/versions/3.12.5/bin/python3",
+                prefix=[python_executable],
             ),
         ]
     )

@@ -18,6 +18,10 @@ This repository contains the ros2 jazzy package for the ai lane detection based 
    pip install -r requirements.txt
    ```
 3. Download the trained model and its corresponding configuration file. (See the [Usage](#usage) section for more details.)
+4. Please set the following ENV variable in your .bashrc/.zshrc if not already done:
+   ```bash
+   PYTHON_EXECUTABLE="/home/$USER/.pyenv/versions/default/bin/python3" # Change this to the python3 executable path of your pyenv
+   ```
 
 ## Usage
 
