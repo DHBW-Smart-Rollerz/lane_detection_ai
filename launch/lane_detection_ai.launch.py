@@ -35,7 +35,7 @@ def generate_launch_description():
             ),
             Node(
                 package="lane_detection_ai",
-                namespace="lane_detection_ai",
+                namespace="",
                 executable="lane_detection_ai_node",
                 name="lane_detection_ai_node",
                 parameters=[
