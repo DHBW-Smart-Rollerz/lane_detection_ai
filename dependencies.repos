@@ -1,0 +1,10 @@
+# This file contains the dependencies of the lane_detection_ai module to build it with colcon
+repositories:
+  smarty_utils:
+    type: git
+    url: https://github.com/DHBW-Smart-Rollerz/smarty_utils.git
+    version: jazzy
+  camera_preprocessing:
+    type: git
+    url: https://github.com/DHBW-Smart-Rollerz/camera_preprocessing.git
+    version: jazzy
