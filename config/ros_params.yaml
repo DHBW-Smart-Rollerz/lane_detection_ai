@@ -5,6 +5,6 @@ lane_detection_ai_node:
     model_config_path: "config/model_sparse_config.py"
 
     # Topics for an example publisher and subscriber
-    image_topic: "/camera/undistorted"
-    result_topic: "/lane_detection/result"
-    debug_image_topic: "/lane_detection/debug_image"
+    image_topic: "/camera/image/undistorted"
+    result_topic: "/lane_detection/lane"
+    debug_image_topic: "/lane_detection/debug/image"
