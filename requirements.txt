@@ -4,3 +4,4 @@ opencv_python
 pytest
 torch
 torchvision
+empy
