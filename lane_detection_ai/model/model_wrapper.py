@@ -103,7 +103,7 @@ class LaneDetectionAiModel:
                 pred = self.net(image)
 
         with Timer(name="pred2coords", filter_strength=40):
-            coords = self.pred2coords(
+            coords = self.pred2coords_optimized(
                 pred,
                 self.config.row_anchor,
                 self.config.col_anchor,
@@ -238,6 +238,124 @@ class LaneDetectionAiModel:
                     tmp.append(
                         (int(col_anchor[k] * original_image_width), int(out_tmp))
                     )
+            coords.append(tmp)
+
+        return coords
+
+    @staticmethod
+    def pred2coords_optimized(
+        pred: dict[str, torch.Tensor],
+        row_anchor: np.ndarray,
+        col_anchor: np.ndarray,
+        local_width: int = 1,
+        original_image_width: int = 1640,
+        original_image_height: int = 590,
+    ) -> List[List[tuple[int, int]]]:
+        """
+        Convert the prediction to coordinates (Optimized Version).
+
+        Arguments:
+            pred -- Prediction dictionary containing tensors ('loc_row', 'exist_row', 'loc_col', 'exist_col').
+                    Assumes tensors are on the appropriate device (CPU or GPU).
+            row_anchor -- Row anchor positions (normalized 0-1 or similar). NumPy array.
+            col_anchor -- Column anchor positions (normalized 0-1 or similar). NumPy array.
+
+        Keyword Arguments:
+            local_width -- Local width for averaging (default: {1})
+            original_image_width -- Original Image width (default: {1640})
+            original_image_height -- Original Image height (default: {590})
+
+        Returns:
+            List[List[Tuple[int, int]]] -- The coordinates for each lane.
+                                           Structure: [[(x,y), ...], [(x,y), ...], ...]
+        """
+        loc_row_tensor = pred["loc_row"]
+        loc_col_tensor = pred["loc_col"]
+        device = loc_row_tensor.device
+
+        batch_size, num_grid_row, num_cls_row, num_lane_row = loc_row_tensor.shape
+        batch_size, num_grid_col, num_cls_col, num_lane_col = loc_col_tensor.shape
+
+        max_indices_row = loc_row_tensor[0].argmax(
+            0
+        )  # Shape: [num_cls_row, num_lane_row]
+        valid_row = pred["exist_row"][0].argmax(0)  # Shape: [num_cls_row, num_lane_row]
+        max_indices_col = loc_col_tensor[0].argmax(
+            0
+        )  # Shape: [num_cls_col, num_lane_col]
+        valid_col = pred["exist_col"][0].argmax(0)  # Shape: [num_cls_col, num_lane_col]
+
+        row_scale = (
+            original_image_width / (num_grid_row - 1)
+            if num_grid_row > 1
+            else original_image_width
+        )
+        col_scale = (
+            original_image_height / (num_grid_col - 1)
+            if num_grid_col > 1
+            else original_image_height
+        )
+
+        coords = []
+        row_anchor_coords = (
+            torch.from_numpy(row_anchor).float() * original_image_height
+        ).int()
+        col_anchor_coords = (
+            torch.from_numpy(col_anchor).float() * original_image_width
+        ).int()
+
+        # Row Processing
+        for i in range(num_lane_row):
+            tmp = []
+            valid_k_indices = torch.where(valid_row[:, i].cpu())[0]
+
+            for k in valid_k_indices:
+                max_idx = max_indices_row[k, i].item()
+
+                start = max(0, max_idx - local_width)
+                end = min(num_grid_row - 1, max_idx + local_width)
+
+                all_ind = torch.arange(
+                    start, end + 1, device=device, dtype=torch.float32
+                )
+                locs = loc_row_tensor[0, start : end + 1, k, i]
+
+                # Softmax and weighted sum
+                probs = locs.softmax(0)
+                out_tmp = torch.sum(probs * all_ind) + 0.5
+
+                # Scale to image coordinates and get y-coordinate from anchor
+                x_coord_tensor = out_tmp * row_scale
+                y_coord = row_anchor_coords[k].item()
+
+                tmp.append((x_coord_tensor.round().int().item(), y_coord))
+            coords.append(tmp)
+
+        # Column Processing
+        for i in range(num_lane_col):
+            tmp = []
+            valid_k_indices = torch.where(valid_col[:, i].cpu())[0]
+
+            for k in valid_k_indices:
+                max_idx = max_indices_col[k, i].item()
+
+                start = max(0, max_idx - local_width)
+                end = min(num_grid_col - 1, max_idx + local_width)
+
+                all_ind = torch.arange(
+                    start, end + 1, device=device, dtype=torch.float32
+                )
+                locs = loc_col_tensor[0, start : end + 1, k, i]
+
+                # Softmax and weighted sum
+                probs = locs.softmax(0)
+                out_tmp = torch.sum(probs * all_ind) + 0.5
+
+                # Scale to image coordinates and get x-coordinate from anchor
+                y_coord_tensor = out_tmp * col_scale
+                x_coord = col_anchor_coords[k].item()
+
+                tmp.append((x_coord, y_coord_tensor.round().int().item()))
             coords.append(tmp)
 
         return coords
