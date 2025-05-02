@@ -1,6 +1,7 @@
 import cv2
 import cv_bridge
 import geometry_msgs.msg
+import std_msgs.msg
 import lane_msgs.msg
 import numpy as np
 import rclpy
@@ -13,6 +14,7 @@ from camera_preprocessing.transformation import (
     coordinate_transform,
     distortion,
 )
+import std_msgs
 from timing import timer
 
 from lane_detection_ai.model import model_wrapper as model
@@ -60,6 +62,7 @@ class LaneDetectionNode(rclpy.node.Node):
                 ("image_topic", "/camera/undistorted"),
                 ("result_topic", "/lane_detection/result"),
                 ("debug_image_topic", "/lane_detection/debug_image"),
+                ("new_image_topic", "/lane_detection/new_image"),
             ],
         )
 
@@ -81,6 +84,10 @@ class LaneDetectionNode(rclpy.node.Node):
             self.get_parameter("debug_image_topic").get_parameter_value().string_value
         )
 
+        self.new_image_topic = (
+            self.get_parameter("new_image_topic").get_parameter_value().string_value
+        )
+
     def init_publisher_and_subscriber(self):
         """Initializes the subscribers and publishers."""
         self.image_subscriber = self.create_subscription(
@@ -88,6 +95,9 @@ class LaneDetectionNode(rclpy.node.Node):
         )
         self.result_publisher = self.create_publisher(
             lane_msgs.msg.LaneDetectionResult, self.result_topic, 1
+        )
+        self.new_image_publisher = self.create_publisher(
+            std_msgs.msg.Header, self.new_image_topic, 1
         )
 
         if self.debug:
@@ -98,6 +108,10 @@ class LaneDetectionNode(rclpy.node.Node):
     def image_callback(self, msg: sensor_msgs.msg.Image):
         """Executed by the ROS2 system whenever a new image is received."""
         # Execute the prediction
+        time_stamp = self.get_clock().now().to_msg()
+        new_msg = std_msgs.msg.Header()
+        new_msg.stamp = time_stamp
+        self.new_image_publisher.publish(new_msg)
         self.execute_prediction(msg)
 
     def wait_for_message_and_execute(self):
