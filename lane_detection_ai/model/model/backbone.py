@@ -19,7 +19,11 @@ class vgg16bn(torch.nn.Module):
 class resnet(torch.nn.Module):
     def __init__(self, layers, pretrained=False):
         super(resnet, self).__init__()
-        if layers == "18":
+        if layers == "9":
+            block = torchvision.models.resnet.BasicBlock
+            layers = [1, 1, 1, 1]
+            model = torchvision.models.ResNet(block, layers)
+        elif layers == "18":
             model = torchvision.models.resnet18(pretrained=pretrained)
         elif layers == "34":
             model = torchvision.models.resnet34(pretrained=pretrained)

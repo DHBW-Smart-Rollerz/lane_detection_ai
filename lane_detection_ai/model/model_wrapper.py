@@ -47,6 +47,7 @@ class LaneDetectionAiModel:
         self.config.batch_size = 1
 
         assert self.config.backbone in [
+            "9",
             "18",
             "34",
             "50",
@@ -99,7 +100,7 @@ class LaneDetectionAiModel:
             image = image[None, :, -self.config.train_height :, :]
 
         with Timer(name="inference", filter_strength=40):
-            with torch.no_grad():
+            with torch.inference_mode():
                 pred = self.net(image)
 
         with Timer(name="pred2coords", filter_strength=40):

@@ -112,17 +112,17 @@ class LaneDetectionNode(SmartyNode):
 
         with timer.Timer(name="transformation", filter_strength=40):
             left_lane = (
-                self.coord_transform.camera_to_world(result[0])
+                self.coord_transform.bird_to_world(result[0])
                 if result[0] is not None
                 else np.asarray([])
             )
             center_lane = (
-                self.coord_transform.camera_to_world(result[1])
+                self.coord_transform.bird_to_world(result[1])
                 if result[1] is not None
                 else np.asarray([])
             )
             right_lane = (
-                self.coord_transform.camera_to_world(result[2])
+                self.coord_transform.bird_to_world(result[2])
                 if result[2] is not None
                 else np.asarray([])
             )
@@ -216,19 +216,19 @@ class LaneDetectionNode(SmartyNode):
                 debug_image = cv2.cvtColor(debug_image, cv2.COLOR_GRAY2RGB)
 
                 if len(left_lane) > 0:
-                    for coord in self.coord_transform.world_to_camera(left_lane).astype(
+                    for coord in self.coord_transform.world_to_bird(left_lane).astype(
                         int
                     ):
                         cv2.circle(debug_image, coord, 5, (255, 0, 0), -1)
                 if len(center_lane) > 0:
-                    for coord in self.coord_transform.world_to_camera(
-                        center_lane
-                    ).astype(int):
+                    for coord in self.coord_transform.world_to_bird(center_lane).astype(
+                        int
+                    ):
                         cv2.circle(debug_image, coord, 5, (0, 255, 0), -1)
                 if len(right_lane) > 0:
-                    for coord in self.coord_transform.world_to_camera(
-                        right_lane
-                    ).astype(int):
+                    for coord in self.coord_transform.world_to_bird(right_lane).astype(
+                        int
+                    ):
                         cv2.circle(debug_image, coord, 5, (0, 0, 255), -1)
 
                 # Draw the trajectories

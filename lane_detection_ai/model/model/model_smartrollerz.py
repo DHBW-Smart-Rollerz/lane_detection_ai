@@ -34,16 +34,10 @@ class parsingNet(torch.nn.Module):
         self.dim3 = 2 * self.num_cls_row * self.num_lane_on_row
         self.dim4 = 2 * self.num_cls_col * self.num_lane_on_col
         self.total_dim = self.dim1 + self.dim2 + self.dim3 + self.dim4
-        mlp_mid_dim = 2048
+        mlp_mid_dim = 512
         self.input_dim = input_height // 32 * input_width // 32 * 8
 
         self.model = resnet(backbone, pretrained=pretrained)
-
-        # for avg pool experiment
-        # self.pool = torch.nn.AdaptiveAvgPool2d(1)
-        # self.pool = torch.nn.AdaptiveMaxPool2d(1)
-
-        # self.register_buffer('coord', torch.stack([torch.linspace(0.5,9.5,10).view(-1,1).repeat(1,50), torch.linspace(0.5,49.5,50).repeat(10,1)]).view(1,2,10,50))
 
         self.cls = torch.nn.Sequential(
             torch.nn.LayerNorm(self.input_dim) if fc_norm else torch.nn.Identity(),
@@ -53,7 +47,7 @@ class parsingNet(torch.nn.Module):
         )
         self.pool = (
             torch.nn.Conv2d(512, 8, 1)
-            if backbone in ["34", "18", "34fca"]
+            if backbone in ["34", "18", "9", "34fca"]
             else torch.nn.Conv2d(2048, 8, 1)
         )
         if self.use_aux:
@@ -65,10 +59,6 @@ class parsingNet(torch.nn.Module):
         if self.use_aux:
             seg_out = self.seg_head(x2, x3, fea)
         fea = self.pool(fea)
-
-        # print(fea.shape)
-        # print(self.coord.shape)
-        # fea = torch.cat([fea, self.coord.repeat(fea.shape[0],1,1,1)], dim = 1)
 
         fea = fea.view(-1, self.input_dim)
         out = self.cls(fea)
