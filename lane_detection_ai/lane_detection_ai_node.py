@@ -34,7 +34,7 @@ class LaneDetectionNode(SmartyNode):
                 # Publisher topics
                 "result_publisher": "/lane_detection/result",
                 "new_image_publisher": "/lane_detection/new_image",
-                "debug_image_publisher": "/lane_detection/debug_image",
+                "debug_image_publisher": "/lane_detection/debug/image",
                 # Parameters
                 "model_config_path": "config/model_sparse_config.py",
                 "state": NodeState.ACTIVE.value,
