@@ -4,6 +4,7 @@ from typing import List
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 import torch
 import torchvision.transforms as transforms
 from camera_preprocessing.transformation.calibration import Calibration
@@ -35,7 +36,7 @@ class LaneDetectionAiModel:
                 transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
             ]
         )
-        self.net = self.load_model()
+        self.load_model()
 
     def load_model(self):
         """
@@ -44,6 +45,7 @@ class LaneDetectionAiModel:
         Returns:
             torch.nn.Module -- The model.
         """
+
         self.config.batch_size = 1
 
         assert self.config.backbone in [
@@ -59,7 +61,18 @@ class LaneDetectionAiModel:
             "101wide",
         ]
 
-        net = get_model(self.config)
+        if self.config.test_model.endswith(".pth"):
+            self._load_pytorch_model()
+        elif self.config.test_model.endswith(".onnx"):
+            self._load_onnx_model()
+        else:
+            raise ValueError(f"Unsupported model file format: {self.config.test_model}")
+
+    def _load_pytorch_model(self):
+        """
+        Load the PyTorch model.
+        """
+        self.net = get_model(self.config)
 
         state_dict = torch.load(
             self.config.test_model, map_location="cpu", weights_only=True
@@ -71,10 +84,14 @@ class LaneDetectionAiModel:
             else:
                 compatible_state_dict[k] = v
 
-        net.load_state_dict(compatible_state_dict, strict=False)
-        net.eval()
+        self.net.load_state_dict(compatible_state_dict, strict=False)
+        self.net.eval()
 
-        return net
+    def _load_onnx_model(self):
+        """
+        Load the ONNX model.
+        """
+        self.ort_session = ort.InferenceSession(self.config.test_model)
 
     def predict(self, image: np.ndarray) -> List[np.ndarray]:
         """
@@ -100,8 +117,19 @@ class LaneDetectionAiModel:
             image = image[None, :, -self.config.train_height :, :]
 
         with Timer(name="inference", filter_strength=40):
-            with torch.inference_mode():
-                pred = self.net(image)
+            if self.config.test_model.endswith(".pth"):
+                with torch.inference_mode():
+                    pred = self.net(image)
+            elif self.config.test_model.endswith(".onnx"):
+                # Convert the image to a format suitable for ONNX
+                image = image.cpu().numpy()
+                pred = self.ort_session.run(None, {"input": image})
+                pred = {
+                    "loc_row": torch.from_numpy(pred[0]),
+                    "exist_row": torch.from_numpy(pred[1]),
+                    "loc_col": torch.from_numpy(pred[2]),
+                    "exist_col": torch.from_numpy(pred[3]),
+                }
 
         with Timer(name="pred2coords", filter_strength=40):
             coords = self.pred2coords_optimized(

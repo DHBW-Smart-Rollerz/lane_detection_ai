@@ -12,7 +12,6 @@ from camera_preprocessing.transformation import (
     coordinate_transform,
     distortion,
 )
-from rclpy.qos import QoSProfile
 from smarty_utils.enums import NodeState
 from smarty_utils.smarty_node import SmartyNode
 from timing import timer
@@ -87,6 +86,7 @@ class LaneDetectionNode(SmartyNode):
         if not self.active:
             self.get_logger().info("🚫 Node is not active. Ignoring image callback.")
             return
+
         # Execute the prediction
         time_stamp = self.get_clock().now().to_msg()
         new_msg = std_msgs.msg.Header()
@@ -207,8 +207,6 @@ class LaneDetectionNode(SmartyNode):
                     ),
                 )
             )
-
-        # self.get_logger().info(left_lane)
 
         if self._debug:
             with timer.Timer(name="debug_image", filter_strength=40):

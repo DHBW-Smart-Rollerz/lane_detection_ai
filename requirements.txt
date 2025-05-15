@@ -5,3 +5,5 @@ pytest
 torch
 torchvision
 empy
+onnx
+onnxruntime

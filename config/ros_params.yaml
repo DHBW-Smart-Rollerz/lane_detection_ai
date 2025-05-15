@@ -2,7 +2,7 @@
 lane_detection_ai_node:
   ros__parameters:
     # Path of the model config
-    model_config_path: "config/model_bev_config.py"
+    model_config_path: "config/model_onnx_bev_config.py"
 
     # Topics for an example publisher and subscriber
     image_subscriber: "/camera/image/bev"
