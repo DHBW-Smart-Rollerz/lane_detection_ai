@@ -6,4 +6,6 @@
 #SBATCH --time=08:00:00                 # Maximale Laufzeit
 #SBATCH --output=slurm-outs/slurm-%j.out.          # Ausgabeprotokoll (%j = Job-ID)
 
-srun docker build -f $HOME/lane_detection_ai_training_2/inference.Dockerfile . --network=host -t inference_image
+USER="USER"
+
+srun docker build -f $HOME/$USER/lane_detection_ai_training/run.Dockerfile . --network=host -t lane_detection_ai:run

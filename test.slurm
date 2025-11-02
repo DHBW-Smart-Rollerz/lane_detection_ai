@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=patch_gcl_train  # Name des Jobs
+#SBATCH --job-name=inference_run  # Name des Jobs
 #SBATCH --gres=gpu:1                # Anzahl der benötigten GPUs
 #SBATCH --cpus-per-task=4           # Anzahl der CPU-Kerne
 #SBATCH --mem=24G                   # Arbeitsspeicher
@@ -10,14 +10,10 @@ USER="USER"
 
 srun docker run --rm \
     --gpus all \
-    --env CUDA_VISIBLE_DEVICES=1 \
     --volume $HOME/$USER/lane_detection_ai_training/dataset:/app/dataset \
     --volume $HOME/$USER/lane_detection_ai_training/results:/app/results \
     --volume $HOME/$USER/lane_detection_ai_training/configs:/app/configs \
-    --volume $HOME/$USER/lane_detection_ai_training/train.py:/app/train.py \
-    lane_detection_ai:training \
-    python3 /app/train.py \
-    configs/smartrollerz_res18_bev.py \
-    --dataset Smartrollerz \
-    --data_root /app/dataset/smartrollerz_bev \
-    --log_path /app/results \
+    --volume $HOME/$USER/lane_detection_ai_training/result_inference:/app/result_inference \
+    lane_detection_ai:run \
+    python3 /app/test.py \
+    configs/smartrollerz_res18_bev.py
