@@ -2,9 +2,11 @@
 lane_detection_ai_node:
   ros__parameters:
     # Path of the model config
-    model_config_path: "config/model_sparse_config.py"
+    model_config_path: "config/model_onnx_bev_config.py"
 
     # Topics for an example publisher and subscriber
-    image_topic: "/camera/image/undistorted"
-    result_topic: "/lane_detection/lane"
-    debug_image_topic: "/lane_detection/debug/image"
+    image_subscriber: "/camera/image/bev"
+    result_publisher: "/lane_detection/lane"
+    new_image_publisher: "/lane_detection/new_image"
+    debug_image_publisher: "/lane_detection/debug/image"
+    state: 1 # 0: Inactive, 1: Active

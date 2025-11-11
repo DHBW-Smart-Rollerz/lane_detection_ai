@@ -4,35 +4,56 @@ import geometry_msgs.msg
 import lane_msgs.msg
 import numpy as np
 import rclpy
-import rclpy.node
-import rclpy.wait_for_message
 import sensor_msgs.msg
-from ament_index_python.packages import get_package_share_directory
+import std_msgs
+import std_msgs.msg
 from camera_preprocessing.transformation import (
     birds_eyed_view,
     coordinate_transform,
     distortion,
 )
+from smarty_utils.enums import NodeState
+from smarty_utils.smarty_node import SmartyNode
 from timing import timer
 
 from lane_detection_ai.model import model_wrapper as model
 
 
-class LaneDetectionNode(rclpy.node.Node):
+class LaneDetectionNode(SmartyNode):
     """AI Lane Detection Node."""
 
     def __init__(self):
         """Initialize the LaneDetectionAiNode."""
-        super().__init__("lane_detection_ai_node")
-
+        super().__init__(
+            "lane_detection_ai_node",
+            "lane_detection_ai",
+            node_parameters={
+                # Subscriber topics
+                "image_subscriber": "/camera/undistorted",
+                # Publisher topics
+                "result_publisher": "/lane_detection/result",
+                "new_image_publisher": "/lane_detection/new_image",
+                "debug_image_publisher": "/lane_detection/debug/image",
+                # Parameters
+                "model_config_path": "config/model_sparse_config.py",
+                "state": NodeState.ACTIVE.value,
+                "debug": False,
+            },
+            subscribed_topics={
+                "image_subscriber": (
+                    sensor_msgs.msg.Image,
+                    self.image_callback,
+                    1,
+                ),
+            },
+            published_topics={
+                "result_publisher": (lane_msgs.msg.LaneDetectionResult, 1),
+                "new_image_publisher": (std_msgs.msg.Header, 1),
+                "debug_image_publisher": (sensor_msgs.msg.Image, 1),
+            },
+        )
         # Get the parameters from the yaml file
-        self.package_share_path = get_package_share_directory("lane_detection_ai")
-        self.get_logger().info(f"Package Path: {self.package_share_path}")
-
-        # Load the parameters from the ROS parameter server and initialize
-        # the publishers and subscribers
-        self.load_ros_params()
-        self.init_publisher_and_subscriber()
+        self.get_logger().info(f"Package Path: {self.package_path}")
 
         # Create required objects
         self.cv_bridge = cv_bridge.CvBridge()
@@ -43,74 +64,34 @@ class LaneDetectionNode(rclpy.node.Node):
         )
 
         self.model = model.LaneDetectionAiModel(
-            base_path=self.package_share_path, model_config_path=self.model_config_path
+            base_path=self.package_path, model_config_path=self.model_config_path
         )
 
         self.get_logger().info("LaneDetectionNode initialized")
 
-    def load_ros_params(self):
-        """Gets the parameters from the ROS parameter server."""
-        # All command line arguments from the launch file and parameters from the
-        # yaml config file must be declared here with a default value.
-        self.declare_parameters(
-            namespace="",
-            parameters=[
-                ("debug", False),
-                ("model_config_path", "config/model_sparse_config.py"),
-                ("image_topic", "/camera/undistorted"),
-                ("result_topic", "/lane_detection/result"),
-                ("debug_image_topic", "/lane_detection/debug_image"),
-            ],
-        )
+    @property
+    def model_config_path(self) -> str:
+        """Return the model config path."""
+        return self.get_parameter("model_config_path").value
 
-        # Get parameters from the ROS parameter server into a local variable
-        self.debug = self.get_parameter("debug").get_parameter_value().bool_value
-        self.model_config_path = (
-            self.get_parameter("model_config_path").get_parameter_value().string_value
+    def _reset(self):
+        """Reset the node to its initial state."""
+        del self.model
+        self.model = model.LaneDetectionAiModel(
+            base_path=self.package_path, model_config_path=self.model_config_path
         )
-
-        self.image_topic = (
-            self.get_parameter("image_topic").get_parameter_value().string_value
-        )
-
-        self.result_topic = (
-            self.get_parameter("result_topic").get_parameter_value().string_value
-        )
-
-        self.debug_image_topic = (
-            self.get_parameter("debug_image_topic").get_parameter_value().string_value
-        )
-
-    def init_publisher_and_subscriber(self):
-        """Initializes the subscribers and publishers."""
-        self.image_subscriber = self.create_subscription(
-            sensor_msgs.msg.Image, self.image_topic, self.image_callback, 1
-        )
-        self.result_publisher = self.create_publisher(
-            lane_msgs.msg.LaneDetectionResult, self.result_topic, 1
-        )
-
-        if self.debug:
-            self.debug_image_publisher = self.create_publisher(
-                sensor_msgs.msg.Image, self.debug_image_topic, 1
-            )
 
     def image_callback(self, msg: sensor_msgs.msg.Image):
         """Executed by the ROS2 system whenever a new image is received."""
-        # Execute the prediction
-        self.execute_prediction(msg)
-
-    def wait_for_message_and_execute(self):
-        """Waits for a new message on the image topic and then executes the prediction."""
-        # Wait for a new message on the image topic
-        _, msg = rclpy.wait_for_message.wait_for_message(
-            sensor_msgs.msg.Image, self, self.image_topic
-        )
-
-        if msg is None:
+        if not self.active:
+            self.get_logger().info("🚫 Node is not active. Ignoring image callback.")
             return
 
         # Execute the prediction
+        time_stamp = self.get_clock().now().to_msg()
+        new_msg = std_msgs.msg.Header()
+        new_msg.stamp = time_stamp
+        self.new_image_publisher.publish(new_msg)
         self.execute_prediction(msg)
 
     @timer.Timer(name="total", filter_strength=40)
@@ -131,17 +112,17 @@ class LaneDetectionNode(rclpy.node.Node):
 
         with timer.Timer(name="transformation", filter_strength=40):
             left_lane = (
-                self.coord_transform.camera_to_world(result[0])
+                self.coord_transform.bird_to_world(result[0])
                 if result[0] is not None
                 else np.asarray([])
             )
             center_lane = (
-                self.coord_transform.camera_to_world(result[1])
+                self.coord_transform.bird_to_world(result[1])
                 if result[1] is not None
                 else np.asarray([])
             )
             right_lane = (
-                self.coord_transform.camera_to_world(result[2])
+                self.coord_transform.bird_to_world(result[2])
                 if result[2] is not None
                 else np.asarray([])
             )
@@ -227,27 +208,25 @@ class LaneDetectionNode(rclpy.node.Node):
                 )
             )
 
-        # self.get_logger().info(left_lane)
-
-        if self.debug:
+        if self._debug:
             with timer.Timer(name="debug_image", filter_strength=40):
                 debug_image = image.copy()
                 debug_image = cv2.cvtColor(debug_image, cv2.COLOR_GRAY2RGB)
 
                 if len(left_lane) > 0:
-                    for coord in self.coord_transform.world_to_camera(left_lane).astype(
+                    for coord in self.coord_transform.world_to_bird(left_lane).astype(
                         int
                     ):
                         cv2.circle(debug_image, coord, 5, (255, 0, 0), -1)
                 if len(center_lane) > 0:
-                    for coord in self.coord_transform.world_to_camera(
-                        center_lane
-                    ).astype(int):
+                    for coord in self.coord_transform.world_to_bird(center_lane).astype(
+                        int
+                    ):
                         cv2.circle(debug_image, coord, 5, (0, 255, 0), -1)
                 if len(right_lane) > 0:
-                    for coord in self.coord_transform.world_to_camera(
-                        right_lane
-                    ).astype(int):
+                    for coord in self.coord_transform.world_to_bird(right_lane).astype(
+                        int
+                    ):
                         cv2.circle(debug_image, coord, 5, (0, 0, 255), -1)
 
                 # Draw the trajectories
@@ -263,7 +242,8 @@ class LaneDetectionNode(rclpy.node.Node):
     def _draw_trajectory(
         self, img: np.ndarray, driving_lane_coeff: np.ndarray
     ) -> np.ndarray:
-        """Draws the trajectory on the given image.
+        """
+        Draws the trajectory on the given image.
 
         Args:
             img (np.ndarray): Image to draw the trajectory on.
@@ -321,7 +301,6 @@ def main(args=None):
         use_wait_for_message = True
         if use_wait_for_message:
             while rclpy.ok():
-                node.wait_for_message_and_execute()
                 rclpy.spin_once(node)
         else:
             rclpy.spin(node)
