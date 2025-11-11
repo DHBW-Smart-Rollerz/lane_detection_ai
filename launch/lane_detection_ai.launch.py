@@ -15,7 +15,7 @@ def generate_launch_description():
     Returns:
         LaunchDescription -- The launch description.
     """
-    # python_executable = os.getenv("PYTHON_EXECUTABLE", "/usr/bin/python3")
+    python_executable = os.getenv("PYTHON_EXECUTABLE", "/usr/bin/python3")
 
     # Declare the launch arguments
     params_file_arg = DeclareLaunchArgument(
@@ -42,7 +42,7 @@ def generate_launch_description():
         name="lane_detection_ai_node",
         output="screen",
         parameters=[params_file, {"debug": LaunchConfiguration("debug")}],
-        # prefix=[python_executable],
+        prefix=[python_executable],
     )
 
     return LaunchDescription([params_file_arg, debug_arg, lane_detection_node])
