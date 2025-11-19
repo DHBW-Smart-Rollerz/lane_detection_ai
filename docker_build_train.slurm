@@ -5,6 +5,5 @@
 #SBATCH --time=01:00:00             # Maximale Laufzeit
 #SBATCH --output=slurm-outs/slurm-%j.out.      # Ausgabeprotokoll (%j = Job-ID)
 
-USER="USER"
 
-srun docker build $HOME/$USER/lane_detection_ai_training/ --network=host -t lane_detection_ai:training
+srun docker build $HOME/jan/lane_detection_ai_training/ --network=host -t lane_detection_ai:training

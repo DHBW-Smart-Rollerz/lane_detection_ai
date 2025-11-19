@@ -16,6 +16,8 @@ srun docker run --rm \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/configs:/app/configs \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train.py:/app/train.py \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train_wrapper.sh:/app/train_wrapper.sh \
+        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/lightning: /app/lightning \
+        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train_lightning.py:/app/train_lightning.py \
         lane_detection_ai:training \
         /bin/bash /app/train_wrapper.sh
 
