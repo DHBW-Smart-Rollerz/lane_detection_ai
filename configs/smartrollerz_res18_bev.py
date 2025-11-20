@@ -1,6 +1,6 @@
 dataset = "Smartrollerz"
 data_root = "dataset/smartrollerz_bev"  # Need to be modified before running
-epoch = 200 # 250
+epoch = 50 # 250
 batch_size = 32
 optimizer = "SGD"
 learning_rate = 0.008 # 0.00625

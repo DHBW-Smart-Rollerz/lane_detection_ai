@@ -8,3 +8,4 @@ imagesize
 ujson
 nvidia-dali-cuda120
 pytorch-lightning
+mlflow

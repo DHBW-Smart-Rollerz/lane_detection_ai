@@ -6,7 +6,7 @@
 #SBATCH --time=08:00:00             # Maximale Laufzeit
 #SBATCH --output=slurm-outs/slurm-%j.out.      # Ausgabeprotokoll (%j = Job-ID)
 
-$PATH = "/raid/homes/inf23174"
+
 
 srun docker run --rm \
         --gpus all \
@@ -14,12 +14,15 @@ srun docker run --rm \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/dataset:/app/dataset \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/results:/app/results \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/configs:/app/configs \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train.py:/app/train.py \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train_wrapper.sh:/app/train_wrapper.sh \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/lightning: /app/lightning \
+        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/lightning:/app/lightning \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train_lightning.py:/app/train_lightning.py \
         lane_detection_ai:training \
-        /bin/bash /app/train_wrapper.sh
+        python3 /app/train_lightning.py \
+        configs/smartrollerz_res18_bev.py \
+        --dataset Smartrollerz \
+        --data_root /app/dataset/smartrollerz_bev \
+        --log_path /app/results \
+        --mlflow_uri file:///app/results/mlruns \
+        --mlflow_experiment smartrollerz_lane_detection
 
-# /raid/homes/inf23174/jan/lane_detection_ai_training/dataset/smartrollerz_bev/data
-
+#

@@ -1,0 +1,50 @@
+#!/bin/bash
+#SBATCH --job-name=mlflow_ui
+#SBATCH --gres=gpu:0            # UI doesn’t need GPUs
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --time=04:00:00         # Keep it up to 4h; cancel when done
+#SBATCH --output=slurm-outs/mlflow-%j.out
+
+# MLRUNS_DIR=/raid/homes/inf23174/jan/lane_detection_ai_training/results/mlruns
+# PORT=5050
+
+
+# mlflow ui \
+#    --backend-store-uri "$MLRUNS_DIR" \
+#    --host 0.0.0.0 \
+#    --port "$PORT"
+
+
+# 1. Define Paths
+# This is where your training data actually lives on the DGX
+HOST_RESULTS_DIR=/raid/homes/inf23174/jan/lane_detection_ai_training/results
+
+# This is where the container will see the data (must match training config)
+CONTAINER_RESULTS_DIR=/app/results
+MLRUNS_PATH="${CONTAINER_RESULTS_DIR}/mlruns"
+
+PORT=5050
+
+# 2. Print connection info for you
+# Since this runs on a compute node, you need to know which node it is to tunnel.
+NODE_HOSTNAME=$(hostname)
+echo "======================================================"
+echo "MLflow UI is starting on node: $NODE_HOSTNAME"
+echo "To view this on your local laptop, run this in a NEW terminal on your laptop:"
+echo ""
+echo "ssh -N -L ${PORT}:${NODE_HOSTNAME}:${PORT} <your_username>@<dgx_server_address>"
+echo ""
+echo "Then open: http://localhost:${PORT}"
+echo "======================================================"
+
+# 3. Run Docker
+# We use the 'training' image because we know it has mlflow installed.
+srun docker run --rm \
+    --publish ${PORT}:${PORT} \
+    --volume ${HOST_RESULTS_DIR}:${CONTAINER_RESULTS_DIR} \
+    lane_detection_ai:training \
+    mlflow ui \
+    --host 0.0.0.0 \
+    --port ${PORT} \
+    --backend-store-uri ${MLRUNS_PATH}

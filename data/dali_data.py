@@ -423,6 +423,11 @@ class TrainCollect:
         self.num_cell_col = num_cell_col
 
     def __iter__(self):
+        # Ensure the underlying DALI iterator restarts every time a fresh
+        # Python iterator is requested (Lightning does this at each epoch).
+        # Without this, only the first epoch would yield data and all later
+        # epochs would immediately exhaust with 0 batches processed.
+        self.reset()
         return self
 
     def __next__(self):

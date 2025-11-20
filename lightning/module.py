@@ -43,6 +43,7 @@ class LaneDetectionLightningModule(pl.LightningModule):
         self.model = get_model(cfg)
         self.loss_dict = get_loss_dict(cfg)
         self.metric_dict = get_metric_dict(cfg)
+        self.val_metric_dict = get_metric_dict(cfg)
         self.metric_log_interval = getattr(cfg, "metric_log_interval", 20)
         self.lr_scheduler = None
         self._iters_per_epoch = None
@@ -122,28 +123,66 @@ class LaneDetectionLightningModule(pl.LightningModule):
         batch_idx: int,
         optimizer: torch.optim.Optimizer,
         optimizer_closure=None,
-        on_tpu: bool = False,
-        using_native_amp: bool = False,
-        using_lbfgs: bool = False,
     ) -> None:
-        super().optimizer_step(
-            epoch,
-            batch_idx,
-            optimizer,
-            optimizer_closure,
-            on_tpu,
-            using_native_amp,
-            using_lbfgs,
-        )
+        super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
         if self.lr_scheduler is not None:
             self.lr_scheduler.step(self.global_step)
 
     def on_train_epoch_start(self) -> None:
         reset_metrics(self.metric_dict)
 
+    def on_validation_epoch_start(self) -> None:
+        reset_metrics(self.val_metric_dict)
+
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         # DALI already provides GPU tensors, so we bypass Lightning's device transfer.
         return batch
+
+    def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int):
+        if batch is None:
+            return None
+        batch_size = batch["images"].shape[0]
+        results = inference(self.model, batch, self.cfg.dataset)
+        loss = calc_loss(
+            self.loss_dict,
+            results,
+            logger=None,
+            global_step=self.global_step,
+            epoch=self.current_epoch,
+        )
+        self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        update_metrics(self.val_metric_dict, results)
+        return loss
+
+    def on_validation_epoch_end(self) -> None:
+        # Log all validation metrics
+        metrics_values = {}
+        for idx, (me_name, me_op) in enumerate(zip(self.val_metric_dict["name"], self.val_metric_dict["op"])):
+            val = me_op.get()
+            metrics_values[me_name] = val
+            self.log(
+                f"val/{me_name}",
+                val,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=idx == 0,
+            )
+        
+        # Compute and log F1-like score from available metrics
+        # F1 approximation: harmonic mean of top1 accuracy and existence detection
+        if 'top1' in metrics_values and 'ext_row' in metrics_values:
+            # Simple F1-like score: average precision and recall-like metrics
+            precision_like = metrics_values.get('top1', 0.0)
+            recall_like = metrics_values.get('ext_row', 0.0)
+            if (precision_like + recall_like) > 0:
+                f1_approx = 2 * precision_like * recall_like / (precision_like + recall_like)
+                self.log(
+                    "val/F1_approx",
+                    f1_approx,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         # Avoid overwriting cfg when resuming via Lightning checkpoints.

@@ -65,6 +65,10 @@ def get_args():
     parser.add_argument('--mean_loss_col_w', default=None, type=float)
     parser.add_argument('--eval_mode', default=None, type=str)
     parser.add_argument('--eval_during_training', default=None, type=str2bool)
+    parser.add_argument('--eval_list_path', default=None, type=str)
+    parser.add_argument('--mlflow_uri', default=None, type=str)
+    parser.add_argument('--mlflow_experiment', default=None, type=str)
+    parser.add_argument('--mlflow_run_name', default=None, type=str)
     parser.add_argument('--split_channel', default=None, type=str2bool)
     parser.add_argument('--match_method', default=None, type=str, choices=['fixed', 'hungarian'])
     parser.add_argument('--selected_lane', default=None, type=int, nargs='+')
@@ -87,7 +91,7 @@ def merge_config():
              'finetune', 'resume', 'test_model', 'test_work_dir', 'num_lanes', 'var_loss_power', 'num_row', 'num_col',
              'train_width', 'train_height',
              'num_cell_row', 'num_cell_col', 'mean_loss_w', 'fc_norm', 'soft_loss', 'cls_loss_col_w', 'cls_ext_col_w',
-             'mean_loss_col_w', 'eval_mode', 'eval_during_training', 'split_channel', 'match_method', 'selected_lane',
+             'mean_loss_col_w', 'eval_mode', 'eval_during_training', 'eval_list_path', 'mlflow_uri', 'mlflow_experiment', 'mlflow_run_name', 'split_channel', 'match_method', 'selected_lane',
              'cumsum', 'masked']
     for item in items:
         if getattr(args, item) is not None:
@@ -232,6 +236,36 @@ def get_train_loader(cfg):
     return train_loader
 
 
+def get_eval_loader(cfg):
+    """Return a DALI iterator over the held-out evaluation split if available."""
+
+    def _default_eval_list(dataset_name: str) -> str:
+        if dataset_name == 'CULane':
+            return os.path.join(cfg.data_root, 'list', 'eval_gt.txt')
+        if dataset_name == 'Tusimple':
+            return os.path.join(cfg.data_root, 'eval_gt.txt')
+        if dataset_name == 'CurveLanes':
+            return os.path.join(cfg.data_root, 'valid', 'eval_gt.txt')
+        if dataset_name == 'Smartrollerz':
+            return os.path.join(cfg.data_root, 'labels', 'eval_gt.txt')
+        raise NotImplementedError
+
+    eval_list_path = getattr(cfg, 'eval_list_path', None)
+    if eval_list_path is None:
+        try:
+            eval_list_path = _default_eval_list(cfg.dataset)
+        except NotImplementedError:
+            return None
+
+    if not os.path.isfile(eval_list_path):
+        return None
+
+    return TrainCollect(cfg.batch_size, 4, cfg.data_root, eval_list_path,
+                        get_rank(), get_world_size(),
+                        cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row,
+                        cfg.num_cell_col, cfg.dataset, cfg.crop_ratio)
+
+
 def inference(net, data_label, dataset):
     if dataset == 'CurveLanes':
         return inference_curvelanes(net, data_label)
@@ -289,7 +323,7 @@ def calc_loss(loss_dict, results, logger, global_step, epoch):
 
         loss_cur = loss_dict['op'][i](*datas)
 
-        if global_step % 20 == 0:
+        if logger is not None and global_step % 20 == 0:
             logger.add_scalar('loss/' + loss_dict['name'][i], loss_cur, global_step)
 
         loss += loss_cur * loss_dict['weight'][i]
