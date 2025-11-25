@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4G
 #SBATCH --time=04:00:00         # Keep it up to 4h; cancel when done
-#SBATCH --output=slurm-outs/mlflow-%j.out
+#SBATCH --output=slurm-outs/slurm-out-mlflow-%j.out
 
 # MLRUNS_DIR=/raid/homes/inf23174/jan/lane_detection_ai_training/results/mlruns
 # PORT=5050
@@ -43,8 +43,10 @@ echo "======================================================"
 srun docker run --rm \
     --publish ${PORT}:${PORT} \
     --volume ${HOST_RESULTS_DIR}:${CONTAINER_RESULTS_DIR} \
+    --name mlflow_ui \
     lane_detection_ai:training \
     mlflow ui \
     --host 0.0.0.0 \
     --port ${PORT} \
-    --backend-store-uri ${MLRUNS_PATH}
+    --backend-store-uri ${MLRUNS_PATH} \
+    

@@ -78,6 +78,7 @@ class LaneEval(object):
                 a, p, n = LaneEval.bench(pred_lanes, gt_lanes, y_samples, run_time)
             except BaseException as e:
                 raise Exception('Format of lanes error.')
+            a, p, n = result[:3]
             accuracy += a
             fp += p
             fn += n

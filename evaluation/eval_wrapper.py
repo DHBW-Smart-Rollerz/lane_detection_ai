@@ -1014,7 +1014,12 @@ def eval_lane(net, cfg, ep=None, logger=None):
         if is_main_process():
             for r in res:
                 if r['name'] == 'F1':
-                    return r['value']
+                    f_value = r['value']
+                    break
+            if return_counts and summary is not None:
+                summary.setdefault('tn', 0.0)
+                return f_value, summary
+            return f_value
         else:
             return None
     elif cfg.dataset == 'Smartrollerz':
