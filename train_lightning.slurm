@@ -10,7 +10,7 @@
 
 srun docker run --rm \
         --gpus all \
-        --env CUDA_VISIBLE_DEVICES=1 \
+        --env CUDA_VISIBLE_DEVICES=0 \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/dataset:/app/dataset \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/results:/app/results \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/configs:/app/configs \
@@ -23,6 +23,5 @@ srun docker run --rm \
         --data_root /app/dataset/smartrollerz_bev \
         --log_path /app/results \
         --mlflow_uri file:///app/results/mlruns \
-        --mlflow_experiment smartrollerz_lane_detection
-
-#
+        --mlflow_experiment smartrollerz_lane_detection \
+        --eval_during_training True \

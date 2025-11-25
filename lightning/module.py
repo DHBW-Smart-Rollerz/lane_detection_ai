@@ -1,4 +1,6 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+import os
 
 import pytorch_lightning as pl
 import torch
@@ -12,6 +14,17 @@ from utils.factory import (
     get_scheduler,
 )
 from utils.metrics import reset_metrics, update_metrics
+from evaluation.eval_wrapper import eval_lane
+
+
+def _compute_f1_from_counts(tp: float, fp: float, fn: float) -> Tuple[float, float, float]:
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    if precision + recall == 0:
+        f1 = 0.0
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+    return precision, recall, f1
 
 
 class _LightningLoggerAdapter:
@@ -48,6 +61,12 @@ class LaneDetectionLightningModule(pl.LightningModule):
         self.lr_scheduler = None
         self._iters_per_epoch = None
         self.logger_adapter = _LightningLoggerAdapter(self)
+        self._last_val_f1: Optional[float] = None
+        self._last_val_precision: Optional[float] = None
+        self._last_val_recall: Optional[float] = None
+        self._last_val_tp: Optional[float] = None
+        self._last_val_fp: Optional[float] = None
+        self._last_val_fn: Optional[float] = None
 
         if getattr(cfg, "finetune", None):
             self._load_finetune_weights(cfg.finetune)
@@ -155,34 +174,43 @@ class LaneDetectionLightningModule(pl.LightningModule):
         return loss
 
     def on_validation_epoch_end(self) -> None:
-        # Log all validation metrics
-        metrics_values = {}
+        if getattr(self.cfg, "eval_during_training", False):
+            self._update_external_eval_metrics()
+
+        precision = self._last_val_precision
+        recall = self._last_val_recall
+        f1 = self._last_val_f1
+        tp = self._last_val_tp
+        fp = self._last_val_fp
+        fn = self._last_val_fn
+
         for idx, (me_name, me_op) in enumerate(zip(self.val_metric_dict["name"], self.val_metric_dict["op"])):
-            val = me_op.get()
-            metrics_values[me_name] = val
             self.log(
                 f"val/{me_name}",
-                val,
+                me_op.get(),
                 on_step=False,
                 on_epoch=True,
                 prog_bar=idx == 0,
             )
+
+        if f1 is not None:
+            self.log("val/precision", precision, on_step=False, on_epoch=True, prog_bar=False)
+            self.log("val/recall", recall, on_step=False, on_epoch=True, prog_bar=False)
+            self.log("val/f1", f1, on_step=False, on_epoch=True, prog_bar=True)
+        if tp is not None:
+            self.log("val/tp", tp, on_step=False, on_epoch=True, prog_bar=False)
+        if fp is not None:
+            self.log("val/fp", fp, on_step=False, on_epoch=True, prog_bar=False)
+        if fn is not None:
+            self.log("val/fn", fn, on_step=False, on_epoch=True, prog_bar=False)
+
+        self._last_val_precision = None
+        self._last_val_recall = None
+        self._last_val_f1 = None
+        self._last_val_tp = None
+        self._last_val_fp = None
+        self._last_val_fn = None
         
-        # Compute and log F1-like score from available metrics
-        # F1 approximation: harmonic mean of top1 accuracy and existence detection
-        if 'top1' in metrics_values and 'ext_row' in metrics_values:
-            # Simple F1-like score: average precision and recall-like metrics
-            precision_like = metrics_values.get('top1', 0.0)
-            recall_like = metrics_values.get('ext_row', 0.0)
-            if (precision_like + recall_like) > 0:
-                f1_approx = 2 * precision_like * recall_like / (precision_like + recall_like)
-                self.log(
-                    "val/F1_approx",
-                    f1_approx,
-                    on_step=False,
-                    on_epoch=True,
-                    prog_bar=False,
-                )
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         # Avoid overwriting cfg when resuming via Lightning checkpoints.
@@ -192,3 +220,84 @@ class LaneDetectionLightningModule(pl.LightningModule):
 
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         checkpoint["cfg"] = self.cfg
+    
+    def _ensure_test_work_dir(self) -> str:
+        test_dir = getattr(self.cfg, "test_work_dir", None)
+        if not test_dir:
+            base_dir = None
+            if getattr(self, "trainer", None) is not None:
+                base_dir = self.trainer.default_root_dir
+                if not base_dir:
+                    base_dir = getattr(self.trainer, "log_dir", None)
+            if not base_dir:
+                base_dir = getattr(self.cfg, "log_path", os.getcwd())
+            test_dir = os.path.join(base_dir, "eval_tmp")
+            self.cfg.test_work_dir = test_dir
+        os.makedirs(test_dir, exist_ok=True)
+        return test_dir
+
+    def _compute_external_eval_metrics_rank_zero(self) -> Optional[Tuple[float, float, float, float, float, float]]:
+        if not getattr(self.cfg, "eval_during_training", False):
+            return None
+        if getattr(self, "trainer", None) is None or getattr(self.trainer, "sanity_checking", False):
+            return None
+        if not getattr(self.trainer, "is_global_zero", True):
+            return None
+
+        self._ensure_test_work_dir()
+        original_distributed = getattr(self.cfg, "distributed", False)
+        self.cfg.distributed = False
+        was_training = self.model.training
+        metrics_tuple: Optional[Tuple[float, float, float, float, float, float]] = None
+        try:
+            try:
+                eval_result = eval_lane(self.model, self.cfg, ep=self.current_epoch, logger=None, return_counts=True)
+            except Exception as exc:
+                dist_print(f"[Lightning] External evaluation failed: {exc}")
+                eval_result = None
+            if eval_result is not None:
+                _, summary = eval_result
+                tp = float(summary.get('tp', 0.0))
+                fp = float(summary.get('fp', 0.0))
+                fn = float(summary.get('fn', 0.0))
+                precision, recall, f1 = _compute_f1_from_counts(tp, fp, fn)
+                metrics_tuple = (precision, recall, f1, tp, fp, fn)
+        finally:
+            self.cfg.distributed = original_distributed
+            self.model.train(was_training)
+        return metrics_tuple
+
+    def _gather_eval_metrics(self, metrics_tuple: Optional[Tuple[float, float, float, float, float, float]]) -> Optional[Tuple[float, float, float, float, float, float]]:
+        device = getattr(self, "device", torch.device("cpu"))
+        if not isinstance(device, torch.device):
+            device = torch.device(str(device))
+        payload = torch.zeros(7, dtype=torch.float32, device=device)
+        if metrics_tuple is not None:
+            payload[:6] = torch.tensor(metrics_tuple, dtype=torch.float32, device=device)
+            payload[6] = 1.0
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            gathered = self.all_gather(payload)
+            payload = gathered[0]
+        if payload[6].item() < 0.5:
+            return None
+        values = payload[:6].tolist()
+        return tuple(values)  # type: ignore[return-value]
+
+    def _update_external_eval_metrics(self) -> None:
+        metrics = self._gather_eval_metrics(self._compute_external_eval_metrics_rank_zero())
+        if metrics is None:
+            self._last_val_precision = None
+            self._last_val_recall = None
+            self._last_val_f1 = None
+            self._last_val_tp = None
+            self._last_val_fp = None
+            self._last_val_fn = None
+            return
+
+        precision, recall, f1, tp, fp, fn = metrics
+        self._last_val_precision = precision
+        self._last_val_recall = recall
+        self._last_val_f1 = f1
+        self._last_val_tp = tp
+        self._last_val_fp = fp
+        self._last_val_fn = fn

@@ -26,7 +26,7 @@ class LaneEval(object):
         return np.sum(np.where(np.abs(pred - gt) < thresh, 1., 0.)) / len(gt)
 
     @staticmethod
-    def bench(pred, gt, y_samples, running_time):
+    def bench(pred, gt, y_samples, running_time, return_counts=False):
         if any(len(p) != len(y_samples) for p in pred):
             raise Exception('Format of lanes error.')
         if running_time > 200 or len(gt) + 2 < len(pred):
@@ -50,10 +50,17 @@ class LaneEval(object):
         s = sum(line_accs)
         if len(gt) > 4:
             s -= min(line_accs)
-        return s / max(min(4.0, len(gt)), 1.), fp / len(pred) if len(pred) > 0 else 0., fn / max(min(len(gt), 4.) , 1.)
+        acc = s / max(min(4.0, len(gt)), 1.)
+        fp_rate = fp / len(pred) if len(pred) > 0 else 0.
+        fn_rate = fn / max(min(len(gt), 4.), 1.)
+
+        if return_counts:
+            return acc, fp_rate, fn_rate, float(matched), float(max(fp, 0.)), float(max(fn, 0.))
+
+        return acc, fp_rate, fn_rate
 
     @staticmethod
-    def bench_one_submit(pred_file, gt_file):
+    def bench_one_submit(pred_file, gt_file, return_summary=False):
         # try:
         json_pred = [json.loads(line) for line in open(pred_file, 'r').readlines()]
         # except BaseException as e:
@@ -63,6 +70,7 @@ class LaneEval(object):
             raise Exception('We do not get the predictions of all the test tasks')
         gts = {l['raw_file']: l for l in json_gt}
         accuracy, fp, fn = 0., 0., 0.
+        tp_count, fp_count, fn_count = 0., 0., 0.
         for pred in json_pred:
             if 'raw_file' not in pred or 'lanes' not in pred or 'run_time' not in pred:
                 raise Exception('raw_file or lanes or run_time not in some predictions.')
@@ -75,27 +83,42 @@ class LaneEval(object):
             gt_lanes = gt['lanes']
             y_samples = gt['h_samples']
             try:
-                a, p, n = LaneEval.bench(pred_lanes, gt_lanes, y_samples, run_time)
+                result = LaneEval.bench(pred_lanes, gt_lanes, y_samples, run_time, return_counts=return_summary)
             except BaseException as e:
                 raise Exception('Format of lanes error.')
             a, p, n = result[:3]
             accuracy += a
             fp += p
             fn += n
+            if return_summary:
+                tp_count += result[3]
+                fp_count += result[4]
+                fn_count += result[5]
         num = len(gts)
         # the first return parameter is the default ranking parameter
         pr = 1 - fp / num
         re = 1 - fn / num
-        if (pr+re) == 0:
+        if (pr + re) == 0:
             f1 = 0
         else:
-            f1 = 2*pr*re/(pr+re)
-        return json.dumps([
+            f1 = 2 * pr * re / (pr + re)
+        metrics = [
             {'name': 'Accuracy', 'value': accuracy / num, 'order': 'desc'},
             {'name': 'FP', 'value': fp / num, 'order': 'asc'},
             {'name': 'FN', 'value': fn / num, 'order': 'asc'},
             {'name': 'F1', 'value': f1, 'order': 'asc'}
-        ])
+        ]
+
+        if return_summary:
+            summary = {
+                'num_samples': num,
+                'tp': tp_count,
+                'fp': fp_count,
+                'fn': fn_count,
+            }
+            return json.dumps(metrics), summary
+
+        return json.dumps(metrics)
 
 
 if __name__ == '__main__':

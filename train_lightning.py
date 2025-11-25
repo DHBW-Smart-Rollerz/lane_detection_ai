@@ -49,7 +49,7 @@ def main():
     if mlflow_uri or mlflow_experiment or mlflow_run_name:
         mlflow_logger = MLFlowLogger(
             experiment_name=mlflow_experiment or "lane-detection",
-            tracking_uri=mlflow_uri,
+            tracking_uri=mlflow_uri,mlflow_logger
             run_name=mlflow_run_name or os.path.basename(work_dir),
         )
         mlflow_logger.log_hyperparams(

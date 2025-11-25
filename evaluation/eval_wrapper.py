@@ -894,7 +894,7 @@ def combine_tusimple_test(work_dir, exp_name):
         fp.writelines(all_res_no_dup)
 
 
-def eval_lane(net, cfg, ep=None, logger=None):
+def eval_lane(net, cfg, ep=None, logger=None, return_counts=False):
     net.eval()
     if cfg.dataset == 'CurveLanes':
         if not cfg.tta:
@@ -943,6 +943,8 @@ def eval_lane(net, cfg, ep=None, logger=None):
 
         synchronize()
         if is_main_process():
+            if return_counts:
+                return F, {'tp': float(TP), 'fp': float(FP), 'fn': float(FN), 'tn': 0.0}
             return F
         else:
             return None
@@ -993,6 +995,8 @@ def eval_lane(net, cfg, ep=None, logger=None):
 
         synchronize()
         if is_main_process():
+            if return_counts:
+                return F, {'tp': float(TP), 'fp': float(FP), 'fn': float(FN), 'tn': 0.0}
             return F
         else:
             return None
@@ -1003,15 +1007,21 @@ def eval_lane(net, cfg, ep=None, logger=None):
         synchronize()  # wait for all results
         if is_main_process():
             combine_tusimple_test(cfg.test_work_dir, exp_name)
-            res = LaneEval.bench_one_submit(os.path.join(cfg.test_work_dir, exp_name + '.txt'),
-                                            os.path.join(cfg.data_root, 'test_label.json'))
-            res = json.loads(res)
+            result_path = os.path.join(cfg.test_work_dir, exp_name + '.txt')
+            label_path = os.path.join(cfg.data_root, 'test_label.json')
+            if return_counts:
+                res_json, summary = LaneEval.bench_one_submit(result_path, label_path, return_summary=True)
+            else:
+                res_json = LaneEval.bench_one_submit(result_path, label_path)
+                summary = None
+            res = json.loads(res_json)
             for r in res:
                 dist_print(r['name'], r['value'])
                 if logger is not None:
                     logger.add_scalar('TuEval/' + r['name'], r['value'], global_step=ep)
         synchronize()
         if is_main_process():
+            f_value = None
             for r in res:
                 if r['name'] == 'F1':
                     f_value = r['value']
@@ -1029,18 +1039,29 @@ def eval_lane(net, cfg, ep=None, logger=None):
         synchronize()  # wait for all results
         if is_main_process():
             combine_tusimple_test(cfg.test_work_dir, exp_name)
-            res = LaneEval.bench_one_submit(os.path.join(cfg.test_work_dir, exp_name + '.txt'),
-                                            os.path.join(cfg.data_root, 'test_label.json'))
-            res = json.loads(res)
+            result_path = os.path.join(cfg.test_work_dir, exp_name + '.txt')
+            label_path = os.path.join(cfg.data_root, 'test_label.json')
+            if return_counts:
+                res_json, summary = LaneEval.bench_one_submit(result_path, label_path, return_summary=True)
+            else:
+                res_json = LaneEval.bench_one_submit(result_path, label_path)
+                summary = None
+            res = json.loads(res_json)
             for r in res:
                 dist_print(r['name'], r['value'])
                 if logger is not None:
                     logger.add_scalar('TuEval/' + r['name'], r['value'], global_step=ep)
         synchronize()
         if is_main_process():
+            f_value = None
             for r in res:
                 if r['name'] == 'F1':
-                    return r['value']
+                    f_value = r['value']
+                    break
+            if return_counts and summary is not None:
+                summary.setdefault('tn', 0.0)
+                return f_value, summary
+            return f_value
         else:
             return None
 
