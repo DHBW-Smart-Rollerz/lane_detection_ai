@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:0            # UI doesn’t need GPUs
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4G
-#SBATCH --time=04:00:00         # Keep it up to 4h; cancel when done
+#SBATCH --time=00:10:00         # Keep it up to 4h; cancel when done
 #SBATCH --output=slurm-outs/slurm-out-mlflow-%j.out
 
 # MLRUNS_DIR=/raid/homes/inf23174/jan/lane_detection_ai_training/results/mlruns
