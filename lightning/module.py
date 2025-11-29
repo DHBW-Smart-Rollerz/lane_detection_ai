@@ -14,6 +14,7 @@ from utils.factory import (
     get_scheduler,
 )
 from utils.metrics import reset_metrics, update_metrics
+from utils.smartrollerz_metric import UFLDV2F1Score
 from evaluation.eval_wrapper import eval_lane
 
 
@@ -67,6 +68,11 @@ class LaneDetectionLightningModule(pl.LightningModule):
         self._last_val_tp: Optional[float] = None
         self._last_val_fp: Optional[float] = None
         self._last_val_fn: Optional[float] = None
+        try:
+            self.val_f1_metric: Optional[UFLDV2F1Score] = UFLDV2F1Score(cfg)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.val_f1_metric = None
+            dist_print(f"[Lightning] Failed to initialize UFLDV2F1Score: {exc}")
 
         if getattr(cfg, "finetune", None):
             self._load_finetune_weights(cfg.finetune)
@@ -152,6 +158,8 @@ class LaneDetectionLightningModule(pl.LightningModule):
 
     def on_validation_epoch_start(self) -> None:
         reset_metrics(self.val_metric_dict)
+        if self.val_f1_metric is not None:
+            self.val_f1_metric.reset()
 
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         # DALI already provides GPU tensors, so we bypass Lightning's device transfer.
@@ -171,6 +179,8 @@ class LaneDetectionLightningModule(pl.LightningModule):
         )
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size)
         update_metrics(self.val_metric_dict, results)
+        if self.val_f1_metric is not None:
+            self.val_f1_metric.update(results)
         return loss
 
     def on_validation_epoch_end(self) -> None:
@@ -210,6 +220,53 @@ class LaneDetectionLightningModule(pl.LightningModule):
         self._last_val_tp = None
         self._last_val_fp = None
         self._last_val_fn = None
+
+        if self.val_f1_metric is not None:
+            metric_values = self.val_f1_metric.compute()
+            self.val_f1_metric.reset()
+            if metric_values:
+                self.log(
+                    "val/local_precision",
+                    metric_values["precision"],
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "val/local_recall",
+                    metric_values["recall"],
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "val/local_f1",
+                    metric_values["f1"],
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "val/local_tp",
+                    metric_values["tp"],
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "val/local_fp",
+                    metric_values["fp"],
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                self.log(
+                    "val/local_fn",
+                    metric_values["fn"],
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
         
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
@@ -220,6 +277,25 @@ class LaneDetectionLightningModule(pl.LightningModule):
 
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         checkpoint["cfg"] = self.cfg
+    
+    def _has_external_eval_inputs(self) -> bool:
+        dataset = getattr(self.cfg, "dataset", "")
+        data_root = getattr(self.cfg, "data_root", "")
+        if not data_root:
+            return False
+        if dataset == "Smartrollerz":
+            required = [
+                os.path.join(data_root, "test.txt"),
+                os.path.join(data_root, "test_label.json"),
+            ]
+            missing = [path for path in required if not os.path.exists(path)]
+            if missing:
+                dist_print(
+                    "[Lightning] External evaluation disabled: missing Smartrollerz test files: "
+                    + ", ".join(missing)
+                )
+                return False
+        return True
     
     def _ensure_test_work_dir(self) -> str:
         test_dir = getattr(self.cfg, "test_work_dir", None)
@@ -242,6 +318,8 @@ class LaneDetectionLightningModule(pl.LightningModule):
         if getattr(self, "trainer", None) is None or getattr(self.trainer, "sanity_checking", False):
             return None
         if not getattr(self.trainer, "is_global_zero", True):
+            return None
+        if not self._has_external_eval_inputs():
             return None
 
         self._ensure_test_work_dir()

@@ -16,6 +16,7 @@ srun docker run --rm \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/configs:/app/configs \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/lightning:/app/lightning \
         --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train_lightning.py:/app/train_lightning.py \
+        --volume /raid/homes/inf23174/jan/lane_detection_ai_training:/app \
         lane_detection_ai:training \
         python3 /app/train_lightning.py \
         configs/smartrollerz_res18_bev.py \
