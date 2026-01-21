@@ -181,6 +181,8 @@ def ExternalSourceTrainPipeline(
     normalize_image_scale=False,
     nscale_w=None,
     nscale_h=None,
+    aug_translate_x=50,
+    aug_translate_y=30,
 ):
     pipe = Pipeline(batch_size, num_threads, device_id)
     with pipe:
@@ -210,8 +212,8 @@ def ExternalSourceTrainPipeline(
             mt, angle=fn.random.uniform(range=(-12, 12)), center=center
         )
         off = fn.cat(
-            fn.random.uniform(range=(-300, 300), shape=[1]),
-            fn.random.uniform(range=(-200, 200), shape=[1]),
+            fn.random.uniform(range=(-aug_translate_x, aug_translate_x), shape=[1]),
+            fn.random.uniform(range=(-aug_translate_y, aug_translate_y), shape=[1]),
         )
         mt = fn.transforms.translation(mt, offset=off)
 
@@ -356,6 +358,8 @@ class TrainCollect:
         num_cell_col,
         dataset_name,
         top_crop,
+        aug_translate_x=50,
+        aug_translate_y=30,
     ):
         eii = LaneExternalIterator(
             data_root,
@@ -401,6 +405,8 @@ class TrainCollect:
                 train_width,
                 train_height,
                 top_crop,
+                aug_translate_x=aug_translate_x,
+                aug_translate_y=aug_translate_y,
             )
         self.pii = DALIGenericIterator(
             pipe,

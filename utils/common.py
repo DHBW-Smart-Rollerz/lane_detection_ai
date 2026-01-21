@@ -229,7 +229,9 @@ def get_train_loader(cfg):
         train_loader = TrainCollect(cfg.batch_size, 4, cfg.data_root, os.path.join(cfg.data_root, 'labels', 'train_gt.txt'),
                                     get_rank(), get_world_size(),
                                     cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row,
-                                    cfg.num_cell_col, cfg.dataset, cfg.crop_ratio)
+                                    cfg.num_cell_col, cfg.dataset, cfg.crop_ratio,                            
+                                    aug_translate_x=getattr(cfg, 'aug_translate_x', 50),
+                                    aug_translate_y=getattr(cfg, 'aug_translate_y', 30))
 
     else:
         raise NotImplementedError
