@@ -33,7 +33,12 @@ echo "======================================================"
 echo "MLflow UI is starting on node: $NODE_HOSTNAME"
 echo "To view this on your local laptop, run this in a NEW terminal on your laptop:"
 echo ""
-echo "ssh -N -L ${PORT}:${NODE_HOSTNAME}:${PORT} <your_username>@<dgx_server_address>"
+# set these (or export SSH_USER / DGX_SERVER before sbatch); defaults shown
+SSH_USER="${SSH_USER:-<your_username>}"
+DGX_SERVER="${DGX_SERVER:-<dgx_server_address>}"
+DGX_SERVER=141.31.112.54
+
+echo "ssh -N -L ${PORT}:${NODE_HOSTNAME}:${PORT} ${SSH_USER}@${DGX_SERVER}"
 echo ""
 echo "Then open: http://localhost:${PORT}"
 echo "======================================================"

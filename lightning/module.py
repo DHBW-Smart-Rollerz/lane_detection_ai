@@ -6,6 +6,7 @@ import pytorch_lightning as pl
 import torch
 
 from utils.common import calc_loss, get_model, inference
+from pytorch_lightning.loggers import MLFlowLogger
 from utils.dist_utils import dist_print
 from utils.factory import (
     get_loss_dict,
@@ -246,6 +247,23 @@ class LaneDetectionLightningModule(pl.LightningModule):
                     on_epoch=True,
                     prog_bar=False,
                 )
+                # Also explicitly log the same metrics to MLflow with the epoch as the step.
+                # This makes sure MLflow shows one metric point per validation epoch
+                # (some logger backends omit the epoch step), and helps downstream
+                # automation pick the best epoch by comparing metric steps.
+                try:
+                    trainer = getattr(self, "trainer", None)
+                    if trainer is not None and hasattr(trainer, "loggers"):
+                        for lg in trainer.loggers:
+                            if isinstance(lg, MLFlowLogger):
+                                run_id = lg.run_id
+                                # log_metric expects (run_id, key, value, step)
+                                lg.experiment.log_metric(run_id, "val/local_f1", float(metric_values["f1"]), step=int(self.current_epoch))
+                                lg.experiment.log_metric(run_id, "val/local_precision", float(metric_values["precision"]), step=int(self.current_epoch))
+                                lg.experiment.log_metric(run_id, "val/local_recall", float(metric_values["recall"]), step=int(self.current_epoch))
+                except Exception:
+                    # Non-critical: if MLflow isn't available or logging fails, continue silently
+                    pass
                 self.log(
                     "val/local_tp",
                     metric_values["tp"],

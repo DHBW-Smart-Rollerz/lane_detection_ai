@@ -1,6 +1,6 @@
 dataset = "Smartrollerz"
 data_root = "dataset/smartrollerz_bev"  # Need to be modified before running
-epoch = 50 # 250
+epoch = 200 # 250
 batch_size = 32
 optimizer = "SGD"
 learning_rate = 0.008 # 0.00625
@@ -13,7 +13,7 @@ warmup = "linear"
 warmup_iters = 100
 use_aux = False
 griding_num = 200
-backbone = "9"
+backbone = "18"
 sim_loss_w = 0.0
 shp_loss_w = 0.0
 note = ""
