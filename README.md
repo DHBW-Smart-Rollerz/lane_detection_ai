@@ -23,6 +23,32 @@ This repository contains the ros2 jazzy package for the ai lane detection based 
    PYTHON_EXECUTABLE="/home/$USER/.pyenv/versions/default/bin/python3" # Change this to the python3 executable path of your pyenv
    ```
 
+### HailoRT (optional, required for Hailo backend)
+
+If your model config enables the Hailo backend, this node imports `hailo_platform` (HailoRT Python bindings). Those bindings **must be installed for the exact Python interpreter that executes the ROS2 entrypoint script**.
+
+In the crash log this is shown as:
+
+- `Python: /home/$USER/.pyenv/versions/3.12.11/bin/python3`  (example)
+
+Verify which interpreter is used and whether `hailo_platform` is available:
+
+```bash
+/home/$USER/.pyenv/versions/3.12.11/bin/python3 -c "import sys, importlib.util as u; print(sys.executable); print(u.find_spec('hailo_platform'))"
+```
+
+Install the HailoRT wheel **matching that Python version** (for Jazzy this is typically CPython 3.12, so you need a `cp312` wheel). Example:
+
+```bash
+/home/$USER/.pyenv/versions/3.12.11/bin/python3 -m pip install ~/path/to/hailort-<VERSION>-cp312-cp312-linux_x86_64.whl
+```
+
+Notes:
+
+- The `hailort` package is typically not available on PyPI; you usually install it from the `.whl` provided by Hailo.
+- If you only have a `cp310` or `cp313` wheel, it will **not** work with Python 3.12. Download the matching `cp312` wheel from your HailoRT distribution.
+- You can find .whl files in the Hailo Developer Portal: https://developer.hailo.ai/portal/en/downloads/hailort/ or in the `/resource` directory
+
 ## Usage
 
 To run this package, you will need the pre-trained model weights. As of September 2024, two versions are available: a dense model and a sparse model. You can download them [here](https://it-nas.dhbw-stuttgart.de:5001/?launchApp=SYNO.SDS.Drive.Application#file_id=842460996588058121). Place the downloaded model in the `models/` folder, and the corresponding configuration file in the `config/` folder.

@@ -36,6 +36,7 @@ class LaneDetectionNode(SmartyNode):
                 "debug_image_publisher": "/lane_detection/debug/image",
                 # Parameters
                 "model_config_path": "config/model_sparse_config.py",
+                "image_encoding": "8UC1",
                 "state": NodeState.ACTIVE.value,
                 "debug": False,
             },
@@ -74,6 +75,11 @@ class LaneDetectionNode(SmartyNode):
         """Return the model config path."""
         return self.get_parameter("model_config_path").value
 
+    @property
+    def image_encoding(self) -> str:
+        """Return the desired OpenCV encoding for CvBridge."""
+        return self.get_parameter("image_encoding").value
+
     def _reset(self):
         """Reset the node to its initial state."""
         del self.model
@@ -104,7 +110,9 @@ class LaneDetectionNode(SmartyNode):
         """
         with timer.Timer(name="msg_transport", filter_strength=40):
             # The image has to be retrieved from the message
-            image = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding="8UC1")
+            image = self.cv_bridge.imgmsg_to_cv2(
+                msg, desired_encoding=str(self.image_encoding)
+            )
 
         with timer.Timer(name="prediction", filter_strength=40):
             # Get the result from the model
