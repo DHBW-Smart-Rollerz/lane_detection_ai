@@ -25,7 +25,7 @@ ROOT_DIR="${ROOT_DIR:-/raid/homes/inf23174}" #folder to change rights
 ROOT_DIR="${ROOT_DIR}/$USER/lane_detection_ai_training"
 # Which directories under ROOT_DIR to fix (space-separated, relative to ROOT_DIR)
 # Example: TARGETS="USER inf23174" or TARGETS="dataset results"
-TARGETS="${TARGETS:-results slurm-outs dataset dataset/labels}" # user to give the rights to
+TARGETS="${TARGETS:-results slurm-outs inference_images}" # user to give the rights to
 
 # Image to run as root (use a local image to avoid pulls if possible).
 IMAGE="${IMAGE:-lane_detection_ai:training}" 

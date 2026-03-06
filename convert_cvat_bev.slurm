@@ -9,7 +9,7 @@
 USER="jan"
 
 # Adjust these paths if your dataset/checkerboard location differs.
-DATA_ROOT="/app/dataset/smartrollerz_bev"
+DATA_ROOT="/app/dataset/smartrollerz_bev_new"
 LABEL_GLOB="$DATA_ROOT/labels/2026-01.xml"
 CHECKERBOARD_IMAGE="$DATA_ROOT/labels/chessboard_2026-01_undistorted.png"
 
@@ -21,4 +21,4 @@ srun docker run --rm \
     --volume $HOME/$USER/lane_detection_ai_training/dataset:/app/dataset \
     --volume $HOME/$USER/lane_detection_ai_training/scripts/convert_cvat_bev.py:/app/scripts/convert_cvat_bev.py \
     lane_detection_ai:run \
-    bash -lc "ls -a /app/dataset/smartrollerz_bev && python3 /app/scripts/convert_cvat_bev.py --label-files $LABEL_GLOB --root $DATA_ROOT --checkerboard-image $CHECKERBOARD_IMAGE $OLD_LENS_FLAG"
+    bash -lc "ls -a /app/dataset/smartrollerz_bev_new && python3 /app/scripts/convert_cvat_bev.py --label-files $LABEL_GLOB --root $DATA_ROOT --checkerboard-image $CHECKERBOARD_IMAGE $OLD_LENS_FLAG"

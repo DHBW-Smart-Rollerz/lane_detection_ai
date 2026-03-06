@@ -20,9 +20,9 @@
 
 # Configuration - CHANGE THESE:
 RESULTS_BASE_DIR="/raid/homes/inf23174/jan/lane_detection_ai_training/results"
-TRAINING_RUN_FOLDER="20260304_173700_lr_8e-03_b_32"  # Change this variable for different runs
+TRAINING_RUN_FOLDER="20260306_135352_lr_8e-03_b_32"  # Change this variable for different runs
 TRAINING_RUN_DIR="$RESULTS_BASE_DIR/$TRAINING_RUN_FOLDER"
-INFERENCE_IMAGE_FOLDER="/raid/homes/inf23174/jan/lane_detection_ai_training/dataset/smartrollerz_bev/inference_images"
+INFERENCE_IMAGE_FOLDER="/raid/homes/inf23174/jan/lane_detection_ai_training/inference_images"
 CONFIG_FILE="configs/smartrollerz_res18_bev.py"
 OUTPUT_FOLDER="batch_inference_results"
 OUTPUT_FOLDER_HOST="/raid/homes/inf23174/jan/lane_detection_ai_training/$OUTPUT_FOLDER"

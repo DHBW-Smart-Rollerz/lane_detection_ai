@@ -6,3 +6,4 @@
 *.pyc
 
 /batch_inference_results
+/inference_images

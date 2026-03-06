@@ -25,9 +25,9 @@ srun --container-image=dockerd://lane_detection_ai:training nvidia-smi -L
 srun --container-image=dockerd://lane_detection_ai:training \
      --container-mounts=/raid/homes/inf23174/$USER/lane_detection_ai_training:/app \
      python3 /app/train_lightning.py \
-     configs/smartrollerz_res18.py \
+     configs/smartrollerz_res18_bev.py \
      --dataset Smartrollerz \
-     --data_root /app/dataset/smartrollerz \
+     --data_root /app/dataset/smartrollerz_bev_new \
      --log_path /app/results \
      --mlflow_uri file:///app/results/mlruns \
      --mlflow_experiment smartrollerz_lane_detection \
