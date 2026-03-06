@@ -1,6 +1,6 @@
 dataset = "Smartrollerz"
-data_root = "dataset/smartrollerz_bev"  # Need to be modified before running
-epoch = 200 # 250
+data_root = "dataset/smartrollerz_bev_new"  # Need to be modified before running
+epoch = 250 # 250
 batch_size = 32
 optimizer = "SGD"
 learning_rate = 0.008 # 0.00625
@@ -40,3 +40,6 @@ cls_ext_col_w = 1.0
 mean_loss_col_w = 0.05
 eval_mode = "normal"
 crop_ratio = 1.0
+# Augmentation parameters
+aug_translate_x = 50      # horizontally
+aug_translate_y = 30      # vertically

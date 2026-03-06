@@ -17,13 +17,15 @@
 #     sbatch --export=ROOT_DIR=/raid/homes/inf23174,TARGETS="myfolder" \
 #           docker_chown_user.slurm
 
+USER="jan" # default user for paths, can be overridden by environment variable USER
+
 # Default absolute repo root (can be overridden by environment variable ROOT_DIR)
 ROOT_DIR="${ROOT_DIR:-/raid/homes/inf23174}" #folder to change rights
 
-ROOT_DIR="${ROOT_DIR}/jan/lane_detection_ai_training"
+ROOT_DIR="${ROOT_DIR}/$USER/lane_detection_ai_training"
 # Which directories under ROOT_DIR to fix (space-separated, relative to ROOT_DIR)
 # Example: TARGETS="USER inf23174" or TARGETS="dataset results"
-TARGETS="${TARGETS:-results slurm-outs results/20251126_081920_lr_8e-03_b_32}" # user to give the rights to
+TARGETS="${TARGETS:-results slurm-outs dataset dataset/labels}" # user to give the rights to
 
 # Image to run as root (use a local image to avoid pulls if possible).
 IMAGE="${IMAGE:-lane_detection_ai:training}" 

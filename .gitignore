@@ -4,3 +4,5 @@
 /slurm-outs
 /logs
 *.pyc
+
+/batch_inference_results

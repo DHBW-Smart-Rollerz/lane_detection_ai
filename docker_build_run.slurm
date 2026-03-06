@@ -1,11 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=inference_build  # Name des Jobs
-#SBATCH --gres=gpu:1                    # Anzahl der benötigten GPUs
-#SBATCH --cpus-per-task=4               # Anzahl der CPU-Kerne
-#SBATCH --mem=24G                       # Arbeitsspeicher
-#SBATCH --time=08:00:00                 # Maximale Laufzeit
-#SBATCH --output=slurm-outs/slurm-%j.out.          # Ausgabeprotokoll (%j = Job-ID)
+#SBATCH --job-name=inf23174_inference_build
+#SBATCH --partition=debug
+#SBATCH --gres=gpu:user:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=24G
+#SBATCH --time=08:00:00
+#SBATCH --output=slurm-outs/slurm-%j.out
 
+USER="jan"
 
-
-srun docker build -f $HOME/jan/lane_detection_ai_training/run.Dockerfile . --network=host -t lane_detection_ai:run
+srun docker build -f $HOME/$USER/lane_detection_ai_training/run.Dockerfile . --network=host -t lane_detection_ai:run

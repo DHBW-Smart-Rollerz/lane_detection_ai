@@ -135,7 +135,7 @@ def main():
         max_epochs=cfg.epoch,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices="auto",
-        strategy="ddp" if torch.cuda.device_count() > 1 selse "auto",
+        strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
         reload_dataloaders_every_n_epochs=1,
         default_root_dir=work_dir,
         logger=loggers if len(loggers) > 1 else loggers[0],

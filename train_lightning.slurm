@@ -1,28 +1,34 @@
 #!/bin/bash
-#SBATCH --job-name=patch_gcl_train  # Name des Jobs
-#SBATCH --gres=gpu:1                # Anzahl der benötigten GPUs
-#SBATCH --cpus-per-task=4           # Anzahl der CPU-Kerne
-#SBATCH --mem=24G                   # Arbeitsspeicher
-#SBATCH --time=08:00:00             # Maximale Laufzeit
-#SBATCH --output=slurm-outs/slurm-%j.out.      # Ausgabeprotokoll (%j = Job-ID)
 
+#SBATCH --job-name=inf23174_patch_gcl_train     
+#SBATCH --partition=debug                       
+#SBATCH --gres=gpu:user:1                       
+#SBATCH --cpus-per-task=24                       
+#SBATCH --mem=128G                              
+#SBATCH --time=08:00:00                         
+#SBATCH --output=slurm-outs/slurm-%j.out        
 
+USER="jan"
 
-srun docker run --rm \
-        --gpus all \
-        --env CUDA_VISIBLE_DEVICES=0 \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/dataset:/app/dataset \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/results:/app/results \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/configs:/app/configs \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/lightning:/app/lightning \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training/train_lightning.py:/app/train_lightning.py \
-        --volume /raid/homes/inf23174/jan/lane_detection_ai_training:/app \
-        lane_detection_ai:training \
-        python3 /app/train_lightning.py \
-        configs/smartrollerz_res18_bev.py \
-        --dataset Smartrollerz \
-        --data_root /app/dataset/smartrollerz_bev \
-        --log_path /app/results \
-        --mlflow_uri file:///app/results/mlruns \
-        --mlflow_experiment smartrollerz_lane_detection \
-        --eval_during_training True \
+# Umgebungsvariablen für Container-GPU-Support
+export NVIDIA_VISIBLE_DEVICES=all
+export NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Umgebungsvariablen für Cache-Ordner (werden an den Container weitergereicht)
+export TORCH_HOME=/app/.cache/torch
+export MPLCONFIGDIR=/app/.config/matplotlib
+
+echo "Überprüfe GPU-Sichtbarkeit im Container..."
+srun --container-image=dockerd://lane_detection_ai:training nvidia-smi -L
+
+# Eigentlicher Programmaufruf über Pyxis (jetzt ohne --env)
+srun --container-image=dockerd://lane_detection_ai:training \
+     --container-mounts=/raid/homes/inf23174/$USER/lane_detection_ai_training:/app \
+     python3 /app/train_lightning.py \
+     configs/smartrollerz_res18.py \
+     --dataset Smartrollerz \
+     --data_root /app/dataset/smartrollerz \
+     --log_path /app/results \
+     --mlflow_uri file:///app/results/mlruns \
+     --mlflow_experiment smartrollerz_lane_detection \
+     --eval_during_training True

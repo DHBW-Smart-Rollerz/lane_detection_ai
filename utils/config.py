@@ -268,7 +268,11 @@ class Config(object):
         return len(self._cfg_dict)
 
     def __getattr__(self, name):
-        return getattr(self._cfg_dict, name)
+        try:
+            cfg_dict = super(Config, self).__getattribute__('_cfg_dict')
+        except AttributeError:
+            raise AttributeError(name)
+        return getattr(cfg_dict, name)
 
     def __getitem__(self, name):
         return self._cfg_dict.__getitem__(name)

@@ -193,17 +193,16 @@ def generate_outputs(root: str, labels_dict: dict):
             for lane, color in zip(lane_data, [(0, 255, 0), (0, 0, 255), (255, 0, 0)]):
                 for x, y in lane:
                     cv2.circle(img_debug, (int(x), int(y)), 5, color, -1)
-            cv2.imshow("Lanes", img_debug)
-            cv2.waitKey(0)
+            # cv2.imshow("Lanes", img_debug)
+            # cv2.waitKey(0)
 
-    #         cache_dict[rel_imgcrop_path] = lane_data
-    #         train_gt_file.write(
-    #             f"{rel_imgcrop_path} {image_seg_path} {' '.join(map(str, lane_exists))}\n"
-    #         )
+            cache_dict[rel_imgcrop_path] = lane_data
+            train_gt_file.write(
+                f"{rel_imgcrop_path} {image_seg_path} {' '.join(map(str, lane_exists))}\n"
+            )
 
-    # with open(cache_path, "w") as file:
-    #     json.dump(cache_dict, file)
-
+    with open(cache_path, "w") as file:
+        json.dump(cache_dict, file)
 
 def get_args():
     parser = argparse.ArgumentParser(
