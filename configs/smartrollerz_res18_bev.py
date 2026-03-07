@@ -1,5 +1,5 @@
 dataset = "Smartrollerz"
-data_root = "dataset/smartrollerz_bev_new"  # Need to be modified before running
+data_root = "dataset/smartrollerz_bev"  # Need to be modified before running
 epoch = 250 # 250
 batch_size = 32
 optimizer = "SGD"

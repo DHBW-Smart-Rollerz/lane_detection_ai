@@ -18,14 +18,26 @@
 # - CONFIG_FILE: Your config file
 # ============================================================
 
+USER="jan"
+
 # Configuration - CHANGE THESE:
-RESULTS_BASE_DIR="/raid/homes/inf23174/jan/lane_detection_ai_training/results"
-TRAINING_RUN_FOLDER="20260306_135352_lr_8e-03_b_32"  # Change this variable for different runs
+RESULTS_BASE_DIR="/raid/homes/inf23174/$USER/lane_detection_ai_training/results"
+TRAINING_RUN_FOLDER="20260307_154142_lr_8e-03_b_32"  # Change this variable for different runs
 TRAINING_RUN_DIR="$RESULTS_BASE_DIR/$TRAINING_RUN_FOLDER"
-INFERENCE_IMAGE_FOLDER="/raid/homes/inf23174/jan/lane_detection_ai_training/inference_images"
-CONFIG_FILE="configs/smartrollerz_res18_bev.py"
+
+# Toggle BEV mode (true/false). This controls config and inference image folder.
+USE_BEV=true
+
+if [ "$USE_BEV" = true ]; then
+    INFERENCE_IMAGE_FOLDER="/raid/homes/inf23174/$USER/lane_detection_ai_training/inference_images_bev"
+    CONFIG_FILE="configs/smartrollerz_res18_bev.py"
+else
+    INFERENCE_IMAGE_FOLDER="/raid/homes/inf23174/$USER/lane_detection_ai_training/inference_images"
+    CONFIG_FILE="configs/smartrollerz_res18.py"
+fi
+
 OUTPUT_FOLDER="batch_inference_results"
-OUTPUT_FOLDER_HOST="/raid/homes/inf23174/jan/lane_detection_ai_training/$OUTPUT_FOLDER"
+OUTPUT_FOLDER_HOST="/raid/homes/inf23174/$USER/lane_detection_ai_training/$OUTPUT_FOLDER"
 
 # Create output folder on host
 mkdir -p $OUTPUT_FOLDER_HOST
@@ -47,6 +59,7 @@ TRAINING_RUN_BASENAME=$(basename ${TRAINING_RUN_DIR})
 echo "=================================================="
 echo "Batch Inference Setup"
 echo "=================================================="
+echo "BEV mode: $USE_BEV"
 echo "Config: $CONFIG_FILE"
 echo "Checkpoint (host): $BEST_CHECKPOINT"
 echo "Checkpoint (docker): /app/results/${TRAINING_RUN_BASENAME}/${BEST_CHECKPOINT_BASENAME}"
