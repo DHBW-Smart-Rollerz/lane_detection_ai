@@ -86,7 +86,7 @@ def _extract_state_dict_from_checkpoint(
     return state_dict
 
 
-def run_batch_inference(config_path, weights_path, image_folder, output_folder=None, device="cuda"):
+def run_batch_inference(config_path, weights_path, image_folder, output_folder=None, device="cuda", decode_mode="auto"):
     """
     Run inference on all images in a folder.
 
@@ -96,6 +96,7 @@ def run_batch_inference(config_path, weights_path, image_folder, output_folder=N
         image_folder: Folder containing images
         output_folder: Where to save visualizations (default: batch_inference_results)
         device: "cuda" or "cpu"
+        decode_mode: "auto", "row", "col", or "row_col"
 
     Returns:
         results: List of dicts with inference results
@@ -128,6 +129,10 @@ def run_batch_inference(config_path, weights_path, image_folder, output_folder=N
     print(f"[BATCH_INFERENCE] Loading config from {config_path}...")
     cfg = Config.fromfile(config_path)
     print(f"[BATCH_INFERENCE] Config loaded successfully")
+
+    if decode_mode == "auto":
+        decode_mode = "row" if cfg.dataset == "Smartrollerz" else "row_col"
+    print(f"[BATCH_INFERENCE] Decode mode: {decode_mode}")
 
     # Set up anchors for Smartrollerz dataset
     cfg.row_anchor = np.linspace(100, 1540, cfg.num_row) / 1550
@@ -238,7 +243,9 @@ def run_batch_inference(config_path, weights_path, image_folder, output_folder=N
                     original_image_width=original_w,
                     original_image_height=original_h,
                     num_grid_row=cfg.num_cell_row,
-                    num_grid_col=cfg.num_cell_col
+                    num_grid_col=cfg.num_cell_col,
+                    num_lanes=cfg.num_lanes,
+                    decode_mode=decode_mode,
                 )
 
                 print(f"[BATCH_INFERENCE]   Detected {len(coords)} lanes")
@@ -282,7 +289,18 @@ def run_batch_inference(config_path, weights_path, image_folder, output_folder=N
     return results
 
 
-def pred2coords(pred, row_anchor, col_anchor, local_width=1, original_image_width=1640, original_image_height=590, num_grid_row=50, num_grid_col=50):
+def pred2coords(
+    pred,
+    row_anchor,
+    col_anchor,
+    local_width=1,
+    original_image_width=1640,
+    original_image_height=590,
+    num_grid_row=50,
+    num_grid_col=50,
+    num_lanes=None,
+    decode_mode="row_col",
+):
     """Convert model predictions to lane coordinates."""
     batch_size, num_grid_row, num_cls_row, num_lane_row = pred['loc_row'].shape
     batch_size, num_grid_col, num_cls_col, num_lane_col = pred['loc_col'].shape
@@ -296,42 +314,51 @@ def pred2coords(pred, row_anchor, col_anchor, local_width=1, original_image_widt
     pred['loc_col'] = pred['loc_col'].cpu()
 
     coords = []
-    row_lane_idx = [0, 1, 2]
-    col_lane_idx = [0, 1, 2]
+    max_row_lanes = num_lane_row if num_lanes is None else min(num_lane_row, int(num_lanes))
+    max_col_lanes = num_lane_col if num_lanes is None else min(num_lane_col, int(num_lanes))
+    row_lane_idx = list(range(max_row_lanes))
+    col_lane_idx = list(range(max_col_lanes))
 
-    for i in row_lane_idx:
-        tmp = []
-        for k in range(valid_row.shape[1]):
-            if valid_row[0, k, i]:
-                all_ind = torch.tensor(
-                    list(
-                        range(
-                            max(0, max_indices_row[0, k, i] - local_width),
-                            min(num_grid_row - 1, max_indices_row[0, k, i] + local_width) + 1,
+    decode_row = decode_mode in ("row", "row_col")
+    decode_col = decode_mode in ("col", "row_col")
+
+    if decode_row:
+        for i in row_lane_idx:
+            tmp = []
+            for k in range(valid_row.shape[1]):
+                if valid_row[0, k, i]:
+                    all_ind = torch.tensor(
+                        list(
+                            range(
+                                max(0, max_indices_row[0, k, i] - local_width),
+                                min(num_grid_row - 1, max_indices_row[0, k, i] + local_width) + 1,
+                            )
                         )
                     )
-                )
-                out_tmp = (pred['loc_row'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
-                out_tmp = out_tmp / (num_grid_row - 1) * original_image_width
-                tmp.append((int(out_tmp), int(row_anchor[k] * original_image_height)))
-        coords.append(tmp)
+                    out_tmp = (pred['loc_row'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
+                    out_tmp = out_tmp / (num_grid_row - 1) * original_image_width
+                    tmp.append((int(out_tmp), int(row_anchor[k] * original_image_height)))
+            if len(tmp) > 0:
+                coords.append(tmp)
 
-    for i in col_lane_idx:
-        tmp = []
-        for k in range(valid_col.shape[1]):
-            if valid_col[0, k, i]:
-                all_ind = torch.tensor(
-                    list(
-                        range(
-                            max(0, max_indices_col[0, k, i] - local_width),
-                            min(num_grid_col - 1, max_indices_col[0, k, i] + local_width) + 1,
+    if decode_col:
+        for i in col_lane_idx:
+            tmp = []
+            for k in range(valid_col.shape[1]):
+                if valid_col[0, k, i]:
+                    all_ind = torch.tensor(
+                        list(
+                            range(
+                                max(0, max_indices_col[0, k, i] - local_width),
+                                min(num_grid_col - 1, max_indices_col[0, k, i] + local_width) + 1,
+                            )
                         )
                     )
-                )
-                out_tmp = (pred['loc_col'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
-                out_tmp = out_tmp / (num_grid_col - 1) * original_image_height
-                tmp.append((int(col_anchor[k] * original_image_width), int(out_tmp)))
-        coords.append(tmp)
+                    out_tmp = (pred['loc_col'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
+                    out_tmp = out_tmp / (num_grid_col - 1) * original_image_height
+                    tmp.append((int(col_anchor[k] * original_image_width), int(out_tmp)))
+            if len(tmp) > 0:
+                coords.append(tmp)
 
     return coords
 
@@ -394,6 +421,14 @@ if __name__ == "__main__":
         choices=["cuda", "cpu"],
         help="Device to use for inference"
     )
+
+    parser.add_argument(
+        "--decode_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "row", "col", "row_col"],
+        help="Lane decoding mode: auto=row for Smartrollerz, row_col otherwise"
+    )
     
     args = parser.parse_args()
     
@@ -410,5 +445,6 @@ if __name__ == "__main__":
         args.weights,
         args.image_folder,
         args.output_folder,
-        args.device
+        args.device,
+        args.decode_mode,
     )

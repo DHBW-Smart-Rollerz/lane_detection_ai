@@ -18,6 +18,8 @@ def pred2coords(
     local_width=1,
     original_image_width=1640,
     original_image_height=590,
+    num_lanes=None,
+    decode_mode="row_col",
 ):
     batch_size, num_grid_row, num_cls_row, num_lane_row = pred["loc_row"].shape
     batch_size, num_grid_col, num_cls_col, num_lane_col = pred["loc_col"].shape
@@ -38,56 +40,65 @@ def pred2coords(
 
     coords = []
 
-    row_lane_idx = [0, 1, 2]
-    col_lane_idx = [0, 1, 2]
+    max_row_lanes = num_lane_row if num_lanes is None else min(num_lane_row, int(num_lanes))
+    max_col_lanes = num_lane_col if num_lanes is None else min(num_lane_col, int(num_lanes))
+    row_lane_idx = list(range(max_row_lanes))
+    col_lane_idx = list(range(max_col_lanes))
 
-    for i in row_lane_idx:
-        tmp = []
-        # print(valid_row[0, :, i])
-        for k in range(valid_row.shape[1]):
-            if valid_row[0, k, i]:
-                all_ind = torch.tensor(
-                    list(
-                        range(
-                            max(0, max_indices_row[0, k, i] - local_width),
-                            min(
-                                num_grid_row - 1, max_indices_row[0, k, i] + local_width
+    decode_row = decode_mode in ("row", "row_col")
+    decode_col = decode_mode in ("col", "row_col")
+
+    if decode_row:
+        for i in row_lane_idx:
+            tmp = []
+            # print(valid_row[0, :, i])
+            for k in range(valid_row.shape[1]):
+                if valid_row[0, k, i]:
+                    all_ind = torch.tensor(
+                        list(
+                            range(
+                                max(0, max_indices_row[0, k, i] - local_width),
+                                min(
+                                    num_grid_row - 1, max_indices_row[0, k, i] + local_width
+                                )
+                                + 1,
                             )
-                            + 1,
                         )
                     )
-                )
 
-                out_tmp = (
-                    pred["loc_row"][0, all_ind, k, i].softmax(0) * all_ind.float()
-                ).sum() + 0.5
-                out_tmp = out_tmp / (num_grid_row - 1) * original_image_width
-                tmp.append((int(out_tmp), int(row_anchor[k] * original_image_height)))
-        coords.append(tmp)
+                    out_tmp = (
+                        pred["loc_row"][0, all_ind, k, i].softmax(0) * all_ind.float()
+                    ).sum() + 0.5
+                    out_tmp = out_tmp / (num_grid_row - 1) * original_image_width
+                    tmp.append((int(out_tmp), int(row_anchor[k] * original_image_height)))
+            if len(tmp) > 0:
+                coords.append(tmp)
 
-    for i in col_lane_idx:
-        tmp = []
-        for k in range(valid_col.shape[1]):
-            if valid_col[0, k, i]:
-                all_ind = torch.tensor(
-                    list(
-                        range(
-                            max(0, max_indices_col[0, k, i] - local_width),
-                            min(
-                                num_grid_col - 1, max_indices_col[0, k, i] + local_width
+    if decode_col:
+        for i in col_lane_idx:
+            tmp = []
+            for k in range(valid_col.shape[1]):
+                if valid_col[0, k, i]:
+                    all_ind = torch.tensor(
+                        list(
+                            range(
+                                max(0, max_indices_col[0, k, i] - local_width),
+                                min(
+                                    num_grid_col - 1, max_indices_col[0, k, i] + local_width
+                                )
+                                + 1,
                             )
-                            + 1,
                         )
                     )
-                )
 
-                out_tmp = (
-                    pred["loc_col"][0, all_ind, k, i].softmax(0) * all_ind.float()
-                ).sum() + 0.5
+                    out_tmp = (
+                        pred["loc_col"][0, all_ind, k, i].softmax(0) * all_ind.float()
+                    ).sum() + 0.5
 
-                out_tmp = out_tmp / (num_grid_col - 1) * original_image_height
-                tmp.append((int(col_anchor[k] * original_image_width), int(out_tmp)))
-        coords.append(tmp)
+                    out_tmp = out_tmp / (num_grid_col - 1) * original_image_height
+                    tmp.append((int(col_anchor[k] * original_image_width), int(out_tmp)))
+            if len(tmp) > 0:
+                coords.append(tmp)
 
     return coords
 
@@ -219,23 +230,22 @@ if __name__ == "__main__":
                 cfg.col_anchor,
                 original_image_width=img_w,
                 original_image_height=img_h,
+                num_lanes=cfg.num_lanes,
+                decode_mode="row" if cfg.dataset == "Smartrollerz" else "row_col",
             )
 
-            # rows
-            for coord in coords[0]:
-                cv2.circle(vis, coord, 5, (0, 0, 255), -1)
-            for coord in coords[1]:
-                cv2.circle(vis, coord, 5, (0, 255, 0), -1)
-            for coord in coords[2]:
-                cv2.circle(vis, coord, 5, (255, 0, 0), -1)
-
-            # cols
-            for coord in coords[3]:
-                cv2.circle(vis, coord, 5, (0, 0, 255), -1)
-            for coord in coords[4]:
-                cv2.circle(vis, coord, 5, (0, 255, 0), -1)
-            for coord in coords[5]:
-                cv2.circle(vis, coord, 5, (255, 0, 0), -1)
+            colors = [
+                (0, 0, 255),
+                (0, 255, 0),
+                (255, 0, 0),
+                (255, 255, 0),
+                (255, 0, 255),
+                (0, 255, 255),
+            ]
+            for lane_idx, lane in enumerate(coords):
+                color = colors[lane_idx % len(colors)]
+                for coord in lane:
+                    cv2.circle(vis, coord, 5, color, -1)
             # cv2.imwrite(f'./demo_images/img{i}.jpg', vis)
             vout.write(vis)
         vout.release()
