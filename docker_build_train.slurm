@@ -8,7 +8,13 @@
 #SBATCH --output=slurm-outs/slurm-%j.out         # Speicherort der Ausgabe [cite: 112]
 
 USER="jan"
+SQSH_PATH="$HOME/$USER/containers/lane_detection_ai_training.sqsh"
 
 # Docker-Image bauen
 srun docker build $HOME/$USER/lane_detection_ai_training/ --network=host -t lane_detection_ai:training
-srun enroot import -o $HOME/$USER/containers/lane_detection_ai_training.sqsh dockerd://lane_detection_ai:training
+
+if [ -f "$SQSH_PATH" ]; then
+	rm -f "$SQSH_PATH"
+fi
+
+srun enroot import -o "$SQSH_PATH" dockerd://lane_detection_ai:training
