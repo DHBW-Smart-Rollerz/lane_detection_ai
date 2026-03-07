@@ -144,23 +144,25 @@ def generate_outputs(root: str, labels_dict: dict):
             img_w = img_data.get("width")
 
             image_seg_path = rel_img_path[:-4] + "_seg" + rel_img_path[-4:]
-            image_seg = np.zeros((1544, 2064), dtype=np.uint8)
-            image_seg = image_seg[100 : 1544 - 100, 100 : 2064 - 100]
+            # image_seg = np.zeros((1544, 2064), dtype=np.uint8)
+            # image_seg = image_seg[100 : 1544 - 100, 100 : 2064 - 100]
+            image_seg = np.zeros((img_h, img_w), dtype=np.uint8)
             cv2.imwrite(os.path.join(root, image_seg_path), image_seg)
 
-            rel_imgcrop_path = rel_img_path[:-4] + "_crop" + rel_img_path[-4:]
+            # rel_imgcrop_path = rel_img_path[:-4] + "_crop" + rel_img_path[-4:]
             img = cv2.imread(os.path.join(root, rel_img_path))
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             # img = img[100 : 1544 - 400, 250 : 2064 - 250]
-            img = cv2.resize(img, (1044, 1364), interpolation=cv2.INTER_LINEAR)
-            cv2.imwrite(os.path.join(root, rel_imgcrop_path), img)
+            # img = cv2.resize(img, (1044, 1364), interpolation=cv2.INTER_LINEAR)
+            # cv2.imwrite(os.path.join(root, rel_imgcrop_path), img)
+            rel_img_for_training = rel_img_path
 
             the_anno_row_anchor = np.array(range(150, 1544 - 500, 1))
             col_for_row_anchor = np.full((len(the_anno_row_anchor)), -99999)
             empty_lane = np.vstack([col_for_row_anchor, the_anno_row_anchor]).T.tolist()
 
-            scale_y = 1  # img_h / (img_h - 600)
-            scale_x = 1  # img_w / (img_w - 700)
+            # scale_y = 1  # img_h / (img_h - 600)
+            # scale_x = 1  # img_w / (img_w - 700)
 
             lane_data, lane_exists = [], []
             for key in ["left_lane", "center_lane", "right_lane"]:
@@ -168,10 +170,15 @@ def generate_outputs(root: str, labels_dict: dict):
                     interp = interpolate_lanes(img_data["lanes"][key])
                     filtered_interp = []
                     for interp_poly in interp:
+                        # filtered = [
+                        #     (int((pt[0] - 250) * scale_x), int((pt[1] - 100) * scale_y))
+                        #     for pt in interp_poly
+                        #     if 250 <= pt[0] < img_w - 250 and 100 <= pt[1] < img_h - 400
+                        # ]
                         filtered = [
-                            (int((pt[0] - 250) * scale_x), int((pt[1] - 100) * scale_y))
+                            (int(pt[0]), int(pt[1]))
                             for pt in interp_poly
-                            if 250 <= pt[0] < img_w - 250 and 100 <= pt[1] < img_h - 400
+                            if 0 <= pt[0] < img_w and 0 <= pt[1] < img_h
                         ]
                         if len(filtered) > 1:
                             filtered_interp.append(filtered)
@@ -196,9 +203,9 @@ def generate_outputs(root: str, labels_dict: dict):
             # cv2.imshow("Lanes", img_debug)
             # cv2.waitKey(0)
 
-            cache_dict[rel_imgcrop_path] = lane_data
+            cache_dict[rel_img_for_training] = lane_data
             train_gt_file.write(
-                f"{rel_imgcrop_path} {image_seg_path} {' '.join(map(str, lane_exists))}\n"
+                f"{rel_img_for_training} {image_seg_path} {' '.join(map(str, lane_exists))}\n"
             )
 
     with open(cache_path, "w") as file:
