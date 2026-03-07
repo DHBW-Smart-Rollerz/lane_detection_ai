@@ -116,6 +116,8 @@ def main():
             tracking_uri=mlflow_uri,
             run_name=mlflow_run_name or os.path.basename(work_dir),
         )
+        used_config_path = os.path.abspath(args.config)
+        used_config_name = os.path.basename(used_config_path)
         mlflow_logger.log_hyperparams(
             {
                 "dataset": getattr(cfg, "dataset", "unknown"),
@@ -124,8 +126,16 @@ def main():
                 "batch_size": getattr(cfg, "batch_size", 0),
                 "learning_rate": getattr(cfg, "learning_rate", 0.0),
                 "note": getattr(cfg, "note", ""),
+                "config_file": used_config_name,
+                "config_path": used_config_path,
             }
         )
+        if os.path.isfile(used_config_path):
+            mlflow_logger.experiment.log_artifact(
+                mlflow_logger.run_id,
+                used_config_path,
+                artifact_path="config",
+            )
         loggers.append(mlflow_logger)
 
     callbacks.append(lr_monitor)
