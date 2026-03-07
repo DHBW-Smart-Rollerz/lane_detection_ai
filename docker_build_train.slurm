@@ -11,3 +11,4 @@ USER="jan"
 
 # Docker-Image bauen
 srun docker build $HOME/$USER/lane_detection_ai_training/ --network=host -t lane_detection_ai:training
+srun enroot import -o $HOME/$USER/containers/lane_detection_ai_training.sqsh dockerd://lane_detection_ai:training
