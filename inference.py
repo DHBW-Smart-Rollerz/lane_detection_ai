@@ -8,7 +8,18 @@ import argparse
 import os
 
 
-def pred2coords(pred, row_anchor, col_anchor, local_width=1, original_image_width=1640, original_image_height=590, num_grid_row=50, num_grid_col=50):
+def pred2coords(
+    pred,
+    row_anchor,
+    col_anchor,
+    local_width=1,
+    original_image_width=1640,
+    original_image_height=590,
+    num_grid_row=50,
+    num_grid_col=50,
+    num_lanes=None,
+    decode_mode="row_col",
+):
     batch_size, num_grid_row, num_cls_row, num_lane_row = pred['loc_row'].shape
     batch_size, num_grid_col, num_cls_col, num_lane_col = pred['loc_col'].shape
 
@@ -21,42 +32,51 @@ def pred2coords(pred, row_anchor, col_anchor, local_width=1, original_image_widt
     pred['loc_col'] = pred['loc_col'].cpu()
 
     coords = []
-    row_lane_idx = [0, 1, 2]
-    col_lane_idx = [0, 1, 2]
+    max_row_lanes = num_lane_row if num_lanes is None else min(num_lane_row, int(num_lanes))
+    max_col_lanes = num_lane_col if num_lanes is None else min(num_lane_col, int(num_lanes))
+    row_lane_idx = list(range(max_row_lanes))
+    col_lane_idx = list(range(max_col_lanes))
 
-    for i in row_lane_idx:
-        tmp = []
-        for k in range(valid_row.shape[1]):
-            if valid_row[0, k, i]:
-                all_ind = torch.tensor(
-                    list(
-                        range(
-                            max(0, max_indices_row[0, k, i] - local_width),
-                            min(num_grid_row - 1, max_indices_row[0, k, i] + local_width) + 1,
+    decode_row = decode_mode in ("row", "row_col")
+    decode_col = decode_mode in ("col", "row_col")
+
+    if decode_row:
+        for i in row_lane_idx:
+            tmp = []
+            for k in range(valid_row.shape[1]):
+                if valid_row[0, k, i]:
+                    all_ind = torch.tensor(
+                        list(
+                            range(
+                                max(0, max_indices_row[0, k, i] - local_width),
+                                min(num_grid_row - 1, max_indices_row[0, k, i] + local_width) + 1,
+                            )
                         )
                     )
-                )
-                out_tmp = (pred['loc_row'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
-                out_tmp = out_tmp / (num_grid_row - 1) * original_image_width
-                tmp.append((int(out_tmp), int(row_anchor[k] * original_image_height)))
-        coords.append(tmp)
+                    out_tmp = (pred['loc_row'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
+                    out_tmp = out_tmp / (num_grid_row - 1) * original_image_width
+                    tmp.append((int(out_tmp), int(row_anchor[k] * original_image_height)))
+            if len(tmp) > 0:
+                coords.append(tmp)
 
-    for i in col_lane_idx:
-        tmp = []
-        for k in range(valid_col.shape[1]):
-            if valid_col[0, k, i]:
-                all_ind = torch.tensor(
-                    list(
-                        range(
-                            max(0, max_indices_col[0, k, i] - local_width),
-                            min(num_grid_col - 1, max_indices_col[0, k, i] + local_width) + 1,
+    if decode_col:
+        for i in col_lane_idx:
+            tmp = []
+            for k in range(valid_col.shape[1]):
+                if valid_col[0, k, i]:
+                    all_ind = torch.tensor(
+                        list(
+                            range(
+                                max(0, max_indices_col[0, k, i] - local_width),
+                                min(num_grid_col - 1, max_indices_col[0, k, i] + local_width) + 1,
+                            )
                         )
                     )
-                )
-                out_tmp = (pred['loc_col'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
-                out_tmp = out_tmp / (num_grid_col - 1) * original_image_height
-                tmp.append((int(col_anchor[k] * original_image_width), int(out_tmp)))
-        coords.append(tmp)
+                    out_tmp = (pred['loc_col'][0, all_ind, k, i].softmax(0) * all_ind.float()).sum() + 0.5
+                    out_tmp = out_tmp / (num_grid_col - 1) * original_image_height
+                    tmp.append((int(col_anchor[k] * original_image_width), int(out_tmp)))
+            if len(tmp) > 0:
+                coords.append(tmp)
 
     return coords
 
@@ -92,6 +112,10 @@ def main(args):
         output = net(image_tensor)
         # output contains: loc_row, loc_col, exist_row, exist_col
 
+    decode_mode = args.decode_mode
+    if decode_mode == "auto":
+        decode_mode = "row" if cfg.dataset == "Smartrollerz" else "row_col"
+
     # Get lane coordinates
     coords = pred2coords(
         output,
@@ -100,7 +124,9 @@ def main(args):
         original_image_width=original_w,
         original_image_height=original_h,
         num_grid_row=cfg.num_cell_row,
-        num_grid_col=cfg.num_cell_col
+        num_grid_col=cfg.num_cell_col,
+        num_lanes=cfg.num_lanes,
+        decode_mode=decode_mode,
     )
 
     # Create visualization - draw lanes on original image
@@ -126,6 +152,7 @@ def main(args):
 
     # Display image info
     print(f"Original image size: {original_w}x{original_h}")
+    print(f"Decode mode: {decode_mode}")
     print(f"Number of detected lanes: {len(coords)}")
     for i, lane in enumerate(coords):
         print(f"Lane {i}: {len(lane)} points detected")
@@ -153,6 +180,14 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Path to the input image file (required)"
+    )
+
+    parser.add_argument(
+        "--decode_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "row", "col", "row_col"],
+        help="Lane decoding mode: auto=row for Smartrollerz, row_col otherwise"
     )
     
     args = parser.parse_args()

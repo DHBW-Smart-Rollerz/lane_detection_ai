@@ -14,6 +14,61 @@ import os
 from pathlib import Path
 
 
+def _ensure_dataset_anchors(cfg):
+    """Populate row/col anchors only when they are missing or invalid."""
+    row_anchor = getattr(cfg, "row_anchor", None)
+    col_anchor = getattr(cfg, "col_anchor", None)
+
+    row_ok = row_anchor is not None and len(row_anchor) == int(cfg.num_row)
+    col_ok = col_anchor is not None and len(col_anchor) == int(cfg.num_col)
+
+    if row_ok and col_ok:
+        cfg.row_anchor = np.asarray(row_anchor, dtype=np.float32)
+        cfg.col_anchor = np.asarray(col_anchor, dtype=np.float32)
+        print("[BATCH_INFERENCE] Using anchors already present in config")
+        return
+
+    dataset = str(getattr(cfg, "dataset", "")).lower()
+
+    if dataset == "culane":
+        cfg.row_anchor = np.linspace(0.42, 1.0, cfg.num_row, dtype=np.float32)
+        cfg.col_anchor = np.linspace(0.0, 1.0, cfg.num_col, dtype=np.float32)
+    elif dataset == "tusimple":
+        cfg.row_anchor = np.linspace(160, 710, cfg.num_row, dtype=np.float32) / 720.0
+        cfg.col_anchor = np.linspace(0.0, 1.0, cfg.num_col, dtype=np.float32)
+    elif dataset == "curvelanes":
+        cfg.row_anchor = np.linspace(0.4, 1.0, cfg.num_row, dtype=np.float32)
+        cfg.col_anchor = np.linspace(0.0, 1.0, cfg.num_col, dtype=np.float32)
+    elif dataset == "smartrollerz":
+        # Keep project default behavior for Smartrollerz unless config explicitly defines anchors.
+        cfg.row_anchor = np.linspace(100, 1540, cfg.num_row, dtype=np.float32) / 1550.0
+        cfg.col_anchor = np.linspace(0.0, 1.0, cfg.num_col, dtype=np.float32)
+    else:
+        raise NotImplementedError(f"Unsupported dataset for anchor setup: {cfg.dataset}")
+
+    print("[BATCH_INFERENCE] Anchors were missing/invalid in config; using dataset defaults")
+
+
+def _preprocess_image_for_model(image_bgr, cfg):
+    """Match demo/training preprocessing: resize -> bottom crop -> RGB tensor -> normalize."""
+    resized_h = int(round(float(cfg.train_height) / float(cfg.crop_ratio)))
+    if resized_h < int(cfg.train_height):
+        raise ValueError(
+            f"Invalid crop_ratio={cfg.crop_ratio}: resized_h ({resized_h}) < train_height ({cfg.train_height})"
+        )
+
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_resized = cv2.resize(image_rgb, (int(cfg.train_width), resized_h), interpolation=cv2.INTER_LINEAR)
+    image_cropped = image_resized[-int(cfg.train_height):, :, :]
+
+    image_tensor = torch.from_numpy(image_cropped).permute(2, 0, 1).float() / 255.0
+    mean = torch.tensor([0.485, 0.456, 0.406], dtype=image_tensor.dtype).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], dtype=image_tensor.dtype).view(3, 1, 1)
+    image_tensor = (image_tensor - mean) / std
+
+    return image_tensor.unsqueeze(0)
+
+
 def _extract_state_dict_from_checkpoint(
     checkpoint_path,
     device="cuda",
@@ -134,9 +189,8 @@ def run_batch_inference(config_path, weights_path, image_folder, output_folder=N
         decode_mode = "row" if cfg.dataset == "Smartrollerz" else "row_col"
     print(f"[BATCH_INFERENCE] Decode mode: {decode_mode}")
 
-    # Set up anchors for Smartrollerz dataset
-    cfg.row_anchor = np.linspace(100, 1540, cfg.num_row) / 1550
-    cfg.col_anchor = np.linspace(0, 1, cfg.num_col)
+    # Set up dataset anchors (do not override if config already provides valid anchors)
+    _ensure_dataset_anchors(cfg)
     print(f"[BATCH_INFERENCE] Anchors set up: num_row={cfg.num_row}, num_col={cfg.num_col}")
 
     # Load trained weights and model
@@ -225,9 +279,7 @@ def run_batch_inference(config_path, weights_path, image_folder, output_folder=N
 
                 print(f"[BATCH_INFERENCE]   Image shape: {image.shape}")
                 original_h, original_w = image.shape[:2]
-                image_resized = cv2.resize(image, (cfg.train_width, cfg.train_height))
-                image_tensor = torch.from_numpy(image_resized).permute(2, 0, 1).float() / 255.0
-                image_tensor = image_tensor.unsqueeze(0).to(device)
+                image_tensor = _preprocess_image_for_model(image, cfg).to(device)
 
                 print(f"[BATCH_INFERENCE]   Tensor shape: {image_tensor.shape}")
 

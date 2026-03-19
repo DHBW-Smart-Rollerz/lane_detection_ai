@@ -3,7 +3,7 @@ from typing import Optional
 
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, LearningRateMonitor
 from pytorch_lightning.loggers import MLFlowLogger, TensorBoardLogger
 
 from lightning.datamodule import SmartrollerzDataModule
@@ -53,6 +53,42 @@ class _ForceLoggerFlushCallback(Callback):
         self._flush(trainer)
 
 
+def _save_model_artifacts(pl_module: pl.LightningModule, weights_path: str, model_path: Optional[str] = None) -> None:
+    os.makedirs(os.path.dirname(weights_path), exist_ok=True)
+    torch.save({"model": pl_module.model.state_dict()}, weights_path)
+    if model_path:
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        torch.save(pl_module.model, model_path)
+
+
+class _BestPthSaverCallback(Callback):
+    def __init__(self, monitor: str, mode: str, weights_path: str, model_path: Optional[str] = None):
+        super().__init__()
+        self.monitor = monitor
+        self.mode = mode
+        self.weights_path = weights_path
+        self.model_path = model_path
+        self.best_score: Optional[float] = None
+
+    def _is_better(self, score: float) -> bool:
+        if self.best_score is None:
+            return True
+        if self.mode == "min":
+            return score < self.best_score
+        return score > self.best_score
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if not trainer.is_global_zero:
+            return
+        metric = trainer.callback_metrics.get(self.monitor)
+        if metric is None:
+            return
+        score = float(metric.detach().cpu().item() if torch.is_tensor(metric) else metric)
+        if self._is_better(score):
+            self.best_score = score
+            _save_model_artifacts(pl_module, self.weights_path, self.model_path)
+
+
 def main():
     torch.backends.cudnn.benchmark = True
 
@@ -74,28 +110,20 @@ def main():
         raise RuntimeError("DataModule failed to initialize train loader length.")
     model.set_iters_per_epoch(datamodule.train_loader_len)
 
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=work_dir,
-        save_last=True,
-        save_top_k=-1,
-        every_n_epochs=max(1, getattr(cfg, "save_every_n_epochs", 50)),
-        filename="epoch{epoch}",
-    )
-    callbacks = [checkpoint_callback]
+    callbacks = []
     best_metric_name: Optional[str] = getattr(cfg, "best_metric", "val/local_f1")
     best_metric_mode = getattr(cfg, "best_metric_mode", "max")
-    best_checkpoint_callback: Optional[ModelCheckpoint] = None
+    best_weights_path = os.path.join(work_dir, "best_weights.pth")
+    best_model_path = os.path.join(work_dir, "best_model.pth")
+    best_saver_callback: Optional[_BestPthSaverCallback] = None
     if has_validation and best_metric_name:
-        best_checkpoint_callback = ModelCheckpoint(
-            dirpath=work_dir,
-            filename="best-{epoch}",
+        best_saver_callback = _BestPthSaverCallback(
             monitor=best_metric_name,
             mode=best_metric_mode,
-            save_top_k=1,
-            save_last=False,
-            auto_insert_metric_name=True,
+            weights_path=best_weights_path,
+            model_path=best_model_path,
         )
-        callbacks.append(best_checkpoint_callback)
+        callbacks.append(best_saver_callback)
     lr_monitor = LearningRateMonitor(logging_interval="step")
     tensorboard_logger = TensorBoardLogger(
         save_dir=work_dir,
@@ -146,6 +174,7 @@ def main():
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices="auto",
         strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
+        enable_checkpointing=False,
         reload_dataloaders_every_n_epochs=1,
         default_root_dir=work_dir,
         logger=loggers if len(loggers) > 1 else loggers[0],
@@ -177,17 +206,24 @@ def main():
                 close_fn()
             except Exception:
                 pass
-    final_ckpt = os.path.join(work_dir, "final.ckpt")
-    trainer.save_checkpoint(final_ckpt)
+    final_weights_path = os.path.join(work_dir, "final_weights.pth")
+    final_model_path = os.path.join(work_dir, "final_model.pth")
+    if trainer.is_global_zero:
+        _save_model_artifacts(model, final_weights_path, final_model_path)
 
-    best_ckpt_path: Optional[str] = None
+    best_artifact_weights_path: Optional[str] = None
+    best_artifact_model_path: Optional[str] = None
     best_metric_score: Optional[float] = None
-    if best_checkpoint_callback is not None and best_checkpoint_callback.best_model_path:
-        best_ckpt_path = best_checkpoint_callback.best_model_path
-        if best_checkpoint_callback.best_model_score is not None:
-            best_metric_score = float(best_checkpoint_callback.best_model_score.cpu().item())
-    elif os.path.exists(final_ckpt):
-        best_ckpt_path = final_ckpt
+    if best_saver_callback is not None and os.path.exists(best_weights_path):
+        best_artifact_weights_path = best_weights_path
+        if os.path.exists(best_model_path):
+            best_artifact_model_path = best_model_path
+        if best_saver_callback.best_score is not None:
+            best_metric_score = float(best_saver_callback.best_score)
+    elif os.path.exists(final_weights_path):
+        best_artifact_weights_path = final_weights_path
+        if os.path.exists(final_model_path):
+            best_artifact_model_path = final_model_path
 
     if mlflow_logger is not None:
         if best_metric_score is not None and best_metric_name:
@@ -197,13 +233,19 @@ def main():
                 metric_tag,
                 float(best_metric_score),
             )
-        artifact_path = getattr(cfg, "mlflow_best_model_artifact_path", "checkpoints")
+        artifact_path = getattr(cfg, "mlflow_best_model_artifact_path", "models")
         if artifact_path == "":
             artifact_path = None
-        if best_ckpt_path and os.path.exists(best_ckpt_path):
+        if best_artifact_weights_path and os.path.exists(best_artifact_weights_path):
             mlflow_logger.experiment.log_artifact(
                 mlflow_logger.run_id,
-                best_ckpt_path,
+                best_artifact_weights_path,
+                artifact_path=artifact_path,
+            )
+        if best_artifact_model_path and os.path.exists(best_artifact_model_path):
+            mlflow_logger.experiment.log_artifact(
+                mlflow_logger.run_id,
+                best_artifact_model_path,
                 artifact_path=artifact_path,
             )
 

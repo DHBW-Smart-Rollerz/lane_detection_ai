@@ -93,3 +93,53 @@ echo "Inference complete!"
 echo "Results saved to: $OUTPUT_FOLDER_HOST"
 echo "=================================================="
 ls -la $OUTPUT_FOLDER_HOST
+
+USER="sanel" # default user for paths, can be overridden by environment variable USER
+
+# Default absolute repo root (can be overridden by environment variable ROOT_DIR)
+ROOT_DIR="${ROOT_DIR:-/raid/homes/inf23054}" #folder to change rights
+
+ROOT_DIR="${ROOT_DIR}/$USER/lane_detection_ai_training"
+# Which directories under ROOT_DIR to fix (space-separated, relative to ROOT_DIR)
+# Example: TARGETS="USER inf23174" or TARGETS="dataset results"
+TARGETS="${TARGETS:-results slurm-outs inference_images dataset batch_inference_results}" # user to give the rights to
+
+# Image to run as root (use a local image to avoid pulls if possible).
+IMAGE="${IMAGE:-lane_detection_ai:run}" 
+
+# UID/GID to chown to (submitting user)
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+
+echo "ROOT_DIR=${ROOT_DIR}"
+echo "TARGETS=${TARGETS}"
+echo "Using IMAGE=${IMAGE}"
+echo "Will chown to UID:GID=${HOST_UID}:${HOST_GID}"
+
+# Dry run listing before changes
+echo "Contents (before):"
+for p in $TARGETS; do
+  echo "---- ${ROOT_DIR}/${p} ----"
+  ls -la "${ROOT_DIR}/${p}" || true
+done
+
+# Run a short root container to chown (no host sudo required)
+srun docker run --rm \
+  -v "${ROOT_DIR}":/data \
+  --user root \
+  "${IMAGE}" \
+  bash -lc "for p in ${TARGETS}; do
+              if [ -e /data/\$p ]; then
+                echo chown -R ${HOST_UID}:${HOST_GID} /data/\$p;
+                chown -R ${HOST_UID}:${HOST_GID} /data/\$p || true;
+                chmod -R u+rwX /data/\$p || true;
+              else
+                echo '/data/'\$p 'does not exist';
+              fi;
+            done"
+
+echo "Contents (after):"
+for p in $TARGETS; do
+  echo "---- ${ROOT_DIR}/${p} ----"
+  ls -la "${ROOT_DIR}/${p}" || true
+done

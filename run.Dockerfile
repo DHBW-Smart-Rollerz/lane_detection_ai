@@ -16,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QT_QPA_PLATFORM=offscreen \
     DISPLAY=
 
-# Install system deps (Python + OpenCV runtime libs + build tools + zip/unzip)
+# Install system deps (Python + OpenCV runtime libs + build tools + zip/unzip + ACL tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -31,10 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     zip \
     unzip \
+    acl \
+    util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && ln -sf /usr/bin/pip3 /usr/bin/pip \
-    && command -v unzip
+    && command -v unzip \
+    && command -v setfacl \
+    && command -v getfacl \
+    && command -v namei
 
 # Copy requirements and install them, but replace DALI with a CUDA 12.x compatible build
 # (requirements.txt may pin nvidia-dali-cuda120; we ensure the correct version is installed)

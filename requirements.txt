@@ -9,3 +9,4 @@ ujson
 nvidia-dali-cuda120
 pytorch-lightning
 mlflow
+optuna>=3.6.0

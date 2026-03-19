@@ -3,6 +3,7 @@ import os
 import random
 import sys
 
+import cv2
 import numpy as np
 import nvidia.dali.fn as fn
 import nvidia.dali.types as types
@@ -22,6 +23,36 @@ if os.path.exists(_my_interp_path):
     sys.path.insert(0, _my_interp_path)
     
 import my_interp
+
+
+def _infer_image_size_from_list(data_root, list_path):
+    """Infer original image size from the first valid sample in a train list file."""
+    if not isinstance(list_path, str) or not os.path.isfile(list_path):
+        return None
+
+    try:
+        with open(list_path, "r") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                img_rel = line.split()[0]
+                if img_rel.startswith("/"):
+                    img_rel = img_rel[1:]
+                img_path = os.path.join(data_root, img_rel)
+                if not os.path.isfile(img_path):
+                    continue
+
+                img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                if img is None:
+                    continue
+                h, w = img.shape[:2]
+                if w > 0 and h > 0:
+                    return int(w), int(h)
+    except Exception:
+        return None
+
+    return None
 
 
 class LaneExternalIterator(object):
@@ -183,6 +214,9 @@ def ExternalSourceTrainPipeline(
     nscale_h=None,
     aug_translate_x=50,
     aug_translate_y=30,
+    aug_scale_min=0.8,
+    aug_scale_max=1.2,
+    aug_rotate_deg=12.0,
 ):
     pipe = Pipeline(batch_size, num_threads, device_id)
     with pipe:
@@ -204,12 +238,15 @@ def ExternalSourceTrainPipeline(
         size = encoded_images_sizes(jpegs)
         center = size / 2
 
-        # Transformation
+        # Transformation (now configurable per view)
         mt = fn.transforms.scale(
-            scale=fn.random.uniform(range=(0.8, 1.2), shape=[2]), center=center
+            scale=fn.random.uniform(range=(aug_scale_min, aug_scale_max), shape=[2]),
+            center=center,
         )
         mt = fn.transforms.rotation(
-            mt, angle=fn.random.uniform(range=(-12, 12)), center=center
+            mt,
+            angle=fn.random.uniform(range=(-aug_rotate_deg, aug_rotate_deg)),
+            center=center,
         )
         off = fn.cat(
             fn.random.uniform(range=(-aug_translate_x, aug_translate_x), shape=[1]),
@@ -218,9 +255,7 @@ def ExternalSourceTrainPipeline(
         mt = fn.transforms.translation(mt, offset=off)
 
         images = fn.warp_affine(images, matrix=mt, fill_value=0, inverse_map=False)
-        seg_images = fn.warp_affine(
-            seg_images, matrix=mt, fill_value=0, inverse_map=False
-        )
+        seg_images = fn.warp_affine(seg_images, matrix=mt, fill_value=0, inverse_map=False)
         labels = fn.coord_transform(labels.gpu(), MT=mt)
 
         # Augmentation
@@ -358,8 +393,13 @@ class TrainCollect:
         num_cell_col,
         dataset_name,
         top_crop,
+        original_image_width=None,
+        original_image_height=None,
         aug_translate_x=50,
         aug_translate_y=30,
+        aug_scale_min=0.8,
+        aug_scale_max=1.2,
+        aug_rotate_deg=12.0,
     ):
         eii = LaneExternalIterator(
             data_root,
@@ -370,7 +410,10 @@ class TrainCollect:
             dataset_name=dataset_name,
         )
 
-        if dataset_name == "CULane":
+        if original_image_width is not None and original_image_height is not None:
+            self.original_image_width = int(original_image_width)
+            self.original_image_height = int(original_image_height)
+        elif dataset_name == "CULane":
             self.original_image_width = 1640
             self.original_image_height = 590
         elif dataset_name == "Tusimple":
@@ -380,8 +423,21 @@ class TrainCollect:
             self.original_image_width = 2560
             self.original_image_height = 1440
         elif dataset_name == "Smartrollerz":
-            self.original_image_width = 1364  # 1364 # 1564 # 2064
-            self.original_image_height = 944  # 944 # 1044 # 1544
+            inferred_size = _infer_image_size_from_list(data_root, list_path)
+            if inferred_size is not None:
+                self.original_image_width, self.original_image_height = inferred_size
+            else:
+                # Front-view Smartrollerz default. BEV should pass explicit values via config.
+                self.original_image_width = 2064
+                self.original_image_height = 1544
+        else:
+            raise NotImplementedError(f"Unsupported dataset: {dataset_name}")
+
+        if shard_id == 0:
+            print(
+                f"[TrainCollect] dataset={dataset_name} original_image_size="
+                f"{self.original_image_width}x{self.original_image_height}"
+            )
 
         if dataset_name == "CurveLanes":
             pipe = ExternalSourceTrainPipeline(
@@ -405,8 +461,14 @@ class TrainCollect:
                 train_width,
                 train_height,
                 top_crop,
+                normalize_image_scale=False,
+                nscale_w=None,
+                nscale_h=None,
                 aug_translate_x=aug_translate_x,
                 aug_translate_y=aug_translate_y,
+                aug_scale_min=aug_scale_min,
+                aug_scale_max=aug_scale_max,
+                aug_rotate_deg=aug_rotate_deg,
             )
         self.pii = DALIGenericIterator(
             pipe,

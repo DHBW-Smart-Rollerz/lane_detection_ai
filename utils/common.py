@@ -38,6 +38,7 @@ def get_args():
     parser.add_argument('--warmup', default=None, type=str)
     parser.add_argument('--warmup_iters', default=None, type=int)
     parser.add_argument('--backbone', default=None, type=str)
+    parser.add_argument('--pretrained', default=None, type=str2bool)
     parser.add_argument('--griding_num', default=None, type=int)
     parser.add_argument('--use_aux', default=None, type=str2bool)
     parser.add_argument('--sim_loss_w', default=None, type=float)
@@ -45,6 +46,14 @@ def get_args():
     parser.add_argument('--note', default=None, type=str)
     parser.add_argument('--log_path', default=None, type=str)
     parser.add_argument('--finetune', default=None, type=str)
+    parser.add_argument('--finetune_backbone_only', default=None, type=str2bool)
+    parser.add_argument('--finetune_strict', default=None, type=str2bool)
+    parser.add_argument('--finetune_stagewise', default=None, type=str2bool)
+    parser.add_argument('--finetune_head_warmup_epochs', default=None, type=int)
+    parser.add_argument('--finetune_discriminative_lr', default=None, type=str2bool)
+    parser.add_argument('--finetune_backbone_lr_scale', default=None, type=float)
+    parser.add_argument('--finetune_head_lr_scale', default=None, type=float)
+    parser.add_argument('--finetune_backbone_prefix', default=None, type=str)
     parser.add_argument('--resume', default=None, type=str)
     parser.add_argument('--test_model', default=None, type=str)
     parser.add_argument('--test_work_dir', default=None, type=str)
@@ -57,6 +66,8 @@ def get_args():
     parser.add_argument('--train_height', default=None, type=int)
     parser.add_argument('--num_cell_row', default=None, type=int)
     parser.add_argument('--num_cell_col', default=None, type=int)
+    parser.add_argument('--original_image_width', default=None, type=int)
+    parser.add_argument('--original_image_height', default=None, type=int)
     parser.add_argument('--mean_loss_w', default=None, type=float)
     parser.add_argument('--fc_norm', default=None, type=str2bool)
     parser.add_argument('--soft_loss', default=None, type=str2bool)
@@ -75,6 +86,17 @@ def get_args():
     parser.add_argument('--cumsum', default=None, type=str2bool)
     parser.add_argument('--masked', default=None, type=str2bool)
 
+    # Optuna arguments
+    parser.add_argument('--optuna_n_trials', default=None, type=int)
+    parser.add_argument('--optuna_timeout', default=None, type=int)
+    parser.add_argument('--optuna_storage', default=None, type=str)
+    parser.add_argument('--optuna_study_name', default=None, type=str)
+    parser.add_argument('--optuna_direction', default=None, type=str, choices=['maximize', 'minimize'])
+    parser.add_argument('--optuna_sampler', default=None, type=str, choices=['tpe', 'random'])
+    parser.add_argument('--optuna_seed', default=None, type=int)
+    parser.add_argument('--optuna_pruner', default=None, type=str, choices=['median', 'none'])
+    parser.add_argument('--optuna_parallel_jobs', default=None, type=int)
+
     return parser
 
 
@@ -87,12 +109,20 @@ def merge_config():
 
     items = ['dataset', 'data_root', 'epoch', 'batch_size', 'optimizer', 'learning_rate',
              'weight_decay', 'momentum', 'scheduler', 'steps', 'gamma', 'warmup', 'warmup_iters',
-             'use_aux', 'griding_num', 'backbone', 'sim_loss_w', 'shp_loss_w', 'note', 'log_path',
-             'finetune', 'resume', 'test_model', 'test_work_dir', 'num_lanes', 'var_loss_power', 'num_row', 'num_col',
+             'use_aux', 'griding_num', 'backbone', 'pretrained', 'sim_loss_w', 'shp_loss_w', 'note', 'log_path',
+             'finetune', 'finetune_backbone_only', 'finetune_strict', 'finetune_stagewise',
+             'finetune_head_warmup_epochs', 'finetune_discriminative_lr', 'finetune_backbone_lr_scale',
+             'finetune_head_lr_scale', 'finetune_backbone_prefix',
+             'resume', 'test_model', 'test_work_dir', 'num_lanes', 'var_loss_power', 'num_row', 'num_col',
              'train_width', 'train_height',
-             'num_cell_row', 'num_cell_col', 'mean_loss_w', 'fc_norm', 'soft_loss', 'cls_loss_col_w', 'cls_ext_col_w',
+             'num_cell_row', 'num_cell_col', 'original_image_width', 'original_image_height',
+             'mean_loss_w', 'fc_norm', 'soft_loss', 'cls_loss_col_w', 'cls_ext_col_w',
              'mean_loss_col_w', 'eval_mode', 'eval_during_training', 'eval_list_path', 'mlflow_uri', 'mlflow_experiment', 'mlflow_run_name', 'split_channel', 'match_method', 'selected_lane',
-             'cumsum', 'masked']
+             'cumsum', 'masked',
+             # Optuna
+             'optuna_n_trials', 'optuna_timeout', 'optuna_storage', 'optuna_study_name',
+             'optuna_direction', 'optuna_sampler', 'optuna_seed', 'optuna_pruner',
+             'optuna_parallel_jobs']
     for item in items:
         if getattr(args, item) is not None:
             dist_print('merge ', item, ' config')
@@ -226,12 +256,29 @@ def get_train_loader(cfg):
                                     cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row,
                                     cfg.num_cell_col, cfg.dataset, cfg.crop_ratio)
     elif cfg.dataset == 'Smartrollerz':
-        train_loader = TrainCollect(cfg.batch_size, 4, cfg.data_root, os.path.join(cfg.data_root, 'labels', 'train_gt.txt'),
-                                    get_rank(), get_world_size(),
-                                    cfg.row_anchor, cfg.col_anchor, cfg.train_width, cfg.train_height, cfg.num_cell_row,
-                                    cfg.num_cell_col, cfg.dataset, cfg.crop_ratio,                            
-                                    aug_translate_x=getattr(cfg, 'aug_translate_x', 50),
-                                    aug_translate_y=getattr(cfg, 'aug_translate_y', 30))
+        train_loader = TrainCollect(
+            cfg.batch_size,
+            4,
+            cfg.data_root,
+            os.path.join(cfg.data_root, 'labels', 'train_gt.txt'),
+            get_rank(),
+            get_world_size(),
+            cfg.row_anchor,
+            cfg.col_anchor,
+            cfg.train_width,
+            cfg.train_height,
+            cfg.num_cell_row,
+            cfg.num_cell_col,
+            cfg.dataset,
+            cfg.crop_ratio,
+            original_image_width=getattr(cfg, 'original_image_width', None),
+            original_image_height=getattr(cfg, 'original_image_height', None),
+            aug_translate_x=getattr(cfg, 'aug_translate_x', 50),
+            aug_translate_y=getattr(cfg, 'aug_translate_y', 30),
+            aug_scale_min=getattr(cfg, 'aug_scale_min', 0.8),
+            aug_scale_max=getattr(cfg, 'aug_scale_max', 1.2),
+            aug_rotate_deg=getattr(cfg, 'aug_rotate_deg', 12.0),
+        )
 
     else:
         raise NotImplementedError

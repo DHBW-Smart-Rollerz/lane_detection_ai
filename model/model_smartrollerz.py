@@ -150,7 +150,7 @@ class parsingNet(torch.nn.Module):
 
 def get_model(cfg):
     return parsingNet(
-        pretrained=True,
+        pretrained=getattr(cfg, "pretrained", True),
         backbone=cfg.backbone,
         num_grid_row=cfg.num_cell_row,
         num_cls_row=cfg.num_row,

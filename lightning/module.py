@@ -56,6 +56,12 @@ class LaneDetectionLightningModule(pl.LightningModule):
         super().__init__()
         self.cfg = cfg
         self.model = get_model(cfg)
+        self._finetune_active = bool(getattr(cfg, "finetune", None) or getattr(cfg, "finetune_active", False))
+        self._finetune_stagewise_enabled = bool(getattr(cfg, "finetune_stagewise", True)) and self._finetune_active
+        self._finetune_discriminative_lr = bool(getattr(cfg, "finetune_discriminative_lr", True)) and self._finetune_active
+        self._head_warmup_epochs = max(0, int(getattr(cfg, "finetune_head_warmup_epochs", 0) or 0))
+        self._backbone_prefix = str(getattr(cfg, "finetune_backbone_prefix", "model."))
+        self._finetune_freeze_state = None
         self.loss_dict = get_loss_dict(cfg)
         self.metric_dict = get_metric_dict(cfg)
         self.val_metric_dict = get_metric_dict(cfg)
@@ -80,6 +86,9 @@ class LaneDetectionLightningModule(pl.LightningModule):
         elif getattr(cfg, "resume", None):
             self._load_resume_weights(cfg.resume)
 
+        # If stage-wise finetuning is enabled, apply initial freeze before optimizer creation.
+        self._maybe_update_finetune_freeze_state(epoch=0, force=True)
+
         self.save_hyperparameters({"note": getattr(cfg, "note", ""), "dataset": cfg.dataset})
 
     def _load_finetune_weights(self, ckpt_path: str) -> None:
@@ -96,6 +105,44 @@ class LaneDetectionLightningModule(pl.LightningModule):
 
     def set_iters_per_epoch(self, iters: int) -> None:
         self._iters_per_epoch = max(1, iters)
+
+    def _split_backbone_head_params(self):
+        backbone_params = []
+        head_params = []
+        for name, param in self.model.named_parameters():
+            if name.startswith(self._backbone_prefix):
+                backbone_params.append(param)
+            else:
+                head_params.append(param)
+        return backbone_params, head_params
+
+    def _set_backbone_requires_grad(self, enabled: bool) -> None:
+        changed = 0
+        for name, param in self.model.named_parameters():
+            if name.startswith(self._backbone_prefix):
+                if param.requires_grad != enabled:
+                    param.requires_grad = enabled
+                    changed += 1
+        state_txt = "trainable" if enabled else "frozen"
+        dist_print(f"[Lightning] Backbone set to {state_txt} (changed_params={changed})")
+
+    def _maybe_update_finetune_freeze_state(self, epoch: int, force: bool = False) -> None:
+        if not self._finetune_stagewise_enabled:
+            return
+
+        freeze_backbone = epoch < self._head_warmup_epochs
+        if not force and self._finetune_freeze_state == freeze_backbone:
+            return
+
+        self._set_backbone_requires_grad(enabled=not freeze_backbone)
+        self._finetune_freeze_state = freeze_backbone
+        if freeze_backbone:
+            dist_print(
+                f"[Lightning] Stage-wise finetune: head warmup active at epoch={epoch} "
+                f"(warmup_epochs={self._head_warmup_epochs})."
+            )
+        else:
+            dist_print(f"[Lightning] Stage-wise finetune: backbone unfrozen at epoch={epoch}.")
 
     def forward(self, batch: Dict[str, torch.Tensor]):
         return self.model(batch["images"])
@@ -137,7 +184,42 @@ class LaneDetectionLightningModule(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        optimizer = get_optimizer(self.model, self.cfg)
+        use_discriminative = self._finetune_discriminative_lr
+        if use_discriminative:
+            backbone_params, head_params = self._split_backbone_head_params()
+            if len(backbone_params) == 0 or len(head_params) == 0:
+                dist_print(
+                    "[Lightning] Discriminative LR disabled: could not split backbone/head params "
+                    f"with prefix '{self._backbone_prefix}'. Falling back to default optimizer."
+                )
+                optimizer = get_optimizer(self.model, self.cfg)
+            else:
+                base_lr = float(self.cfg.learning_rate)
+                backbone_lr_scale = float(getattr(self.cfg, "finetune_backbone_lr_scale", 0.1))
+                head_lr_scale = float(getattr(self.cfg, "finetune_head_lr_scale", 1.0))
+                backbone_lr = base_lr * backbone_lr_scale
+                head_lr = base_lr * head_lr_scale
+
+                param_groups = [
+                    {"params": backbone_params, "lr": backbone_lr, "name": "backbone"},
+                    {"params": head_params, "lr": head_lr, "name": "head"},
+                ]
+                if self.cfg.optimizer == "Adam":
+                    optimizer = torch.optim.Adam(param_groups, weight_decay=self.cfg.weight_decay)
+                elif self.cfg.optimizer == "SGD":
+                    optimizer = torch.optim.SGD(
+                        param_groups,
+                        momentum=self.cfg.momentum,
+                        weight_decay=self.cfg.weight_decay,
+                    )
+                else:
+                    raise NotImplementedError
+                dist_print(
+                    "[Lightning] Using discriminative LR groups "
+                    f"(base_lr={base_lr:.3e}, backbone_lr={backbone_lr:.3e}, head_lr={head_lr:.3e})."
+                )
+        else:
+            optimizer = get_optimizer(self.model, self.cfg)
         if self._iters_per_epoch is None:
             raise RuntimeError("iters_per_epoch is not set. Call set_iters_per_epoch() before training.")
         self.lr_scheduler = get_scheduler(optimizer, self.cfg, self._iters_per_epoch)
@@ -155,6 +237,7 @@ class LaneDetectionLightningModule(pl.LightningModule):
             self.lr_scheduler.step(self.global_step)
 
     def on_train_epoch_start(self) -> None:
+        self._maybe_update_finetune_freeze_state(epoch=self.current_epoch)
         reset_metrics(self.metric_dict)
 
     def on_validation_epoch_start(self) -> None:
