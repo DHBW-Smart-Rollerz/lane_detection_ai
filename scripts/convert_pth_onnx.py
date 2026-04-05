@@ -40,8 +40,71 @@ def _load_checkpoint_model_state(pth_path: str) -> dict:
     ckpt = torch.load(pth_path, map_location="cpu")
     if isinstance(ckpt, dict) and "model" in ckpt:
         return ckpt["model"]
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:
+        return ckpt["state_dict"]
     # fallback: sometimes the checkpoint is directly a state_dict
     return ckpt
+
+
+def _adapt_state_dict_for_model(
+    state_dict: dict, target_state_dict: dict[str, torch.Tensor]
+) -> tuple[dict[str, torch.Tensor], tuple[int, int, int]]:
+    """Best-effort key adaptation for checkpoints trained with wrappers/prefixes.
+
+    Returns:
+        (best_candidate_state, (matched, missing, unexpected))
+    """
+    raw_items = {k: v for k, v in state_dict.items() if torch.is_tensor(v)}
+    target_keys = set(target_state_dict.keys())
+
+    prefixes = [
+        "module.",
+        "model.",
+        "net.",
+        "network.",
+        "lane_detection_ai.module.",
+        "lane_detection_ai.",
+    ]
+
+    def _strip_once(key: str, pfx: str) -> str:
+        return key[len(pfx):] if key.startswith(pfx) else key
+
+    def _strip_iterative(key: str) -> str:
+        out = key
+        changed = True
+        while changed:
+            changed = False
+            for p in prefixes:
+                if out.startswith(p):
+                    out = out[len(p) :]
+                    changed = True
+        return out
+
+    candidates: list[dict[str, torch.Tensor]] = [dict(raw_items)]
+
+    for p in prefixes:
+        remap = {_strip_once(k, p): v for k, v in raw_items.items()}
+        candidates.append(remap)
+
+    candidates.append({_strip_iterative(k): v for k, v in raw_items.items()})
+
+    def _score(cand: dict[str, torch.Tensor]) -> tuple[int, int, int]:
+        cand_keys = set(cand.keys())
+        matched = len(cand_keys & target_keys)
+        missing = len(target_keys - cand_keys)
+        unexpected = len(cand_keys - target_keys)
+        return matched, missing, unexpected
+
+    best = None
+    best_score = (-1, 10**9, 10**9)
+    for cand in candidates:
+        s = _score(cand)
+        if s[0] > best_score[0] or (s[0] == best_score[0] and (s[1] + s[2]) < (best_score[1] + best_score[2])):
+            best = cand
+            best_score = s
+
+    assert best is not None
+    return best, best_score
 
 
 def main():
@@ -65,15 +128,25 @@ def main():
 
     state = _load_checkpoint_model_state(pth_path)
 
-    compatible = {}
-    for k, v in state.items():
-        # mirrors logic in LaneDetectionAiModel._load_pytorch_model
-        if "lane_detection_ai.module." in k:
-            compatible[k[7:]] = v
-        else:
-            compatible[k] = v
+    if not isinstance(state, dict):
+        raise RuntimeError(
+            f"Unsupported checkpoint structure in {pth_path}: expected dict-like state_dict, got {type(state).__name__}"
+        )
 
-    net.load_state_dict(compatible, strict=False)
+    best_state, score = _adapt_state_dict_for_model(state, net.state_dict())
+    missing, unexpected = net.load_state_dict(best_state, strict=False)
+
+    total_target = max(1, len(net.state_dict()))
+    coverage = 1.0 - (len(missing) / total_target)
+    if coverage < 0.90:
+        raise RuntimeError(
+            "Checkpoint/model mismatch while preparing ONNX export.\n"
+            f"file={pth_path}\n"
+            f"matched={score[0]}, missing={len(missing)}, unexpected={len(unexpected)}, coverage={coverage:.3f}\n"
+            f"sample_missing={list(missing)[:12]}\n"
+            f"sample_unexpected={list(unexpected)[:12]}\n"
+            "Likely causes: wrong backbone/head config, wrong checkpoint file, or incompatible training code."
+        )
 
     wrapped = PreprocessAndModel(net).eval()
 
