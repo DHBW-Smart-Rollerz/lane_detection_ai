@@ -57,11 +57,15 @@ class parsingNet(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(mlp_mid_dim, self.total_dim),
         )
-        self.pool = (
-            torch.nn.Conv2d(512, 8, 1)
-            if backbone in ["34", "18", "9", "34fca", "mobilenet-v3-small"]
-            else torch.nn.Conv2d(2048, 8, 1)
-        )
+        if backbone in ["34", "18", "9", "34fca"]:
+            pool_in_channels = 512
+        elif backbone == "mobilenet-v3-small":
+            pool_in_channels = 576
+        elif backbone == "mobilenet-v3-large":
+            pool_in_channels = 960
+        else:
+            pool_in_channels = 2048
+        self.pool = torch.nn.Conv2d(pool_in_channels, 8, 1)
         # self.pool = torch.nn.Conv2d(24, 8, 1)
         if self.use_aux:
             self.seg_head = SegHead(backbone, num_lane_on_row + num_lane_on_col)
