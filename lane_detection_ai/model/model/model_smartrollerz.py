@@ -34,7 +34,7 @@ class parsingNet(torch.nn.Module):
         self.dim3 = 2 * self.num_cls_row * self.num_lane_on_row
         self.dim4 = 2 * self.num_cls_col * self.num_lane_on_col
         self.total_dim = self.dim1 + self.dim2 + self.dim3 + self.dim4
-        mlp_mid_dim = 512
+        mlp_mid_dim = 2048
         self.input_dim = input_height // 32 * input_width // 32 * 8
 
         self.model = resnet(backbone, pretrained=pretrained)
