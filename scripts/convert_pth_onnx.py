@@ -156,6 +156,10 @@ def main():
     dummy = torch.zeros((1, 3, h, w), dtype=torch.uint8)
 
     onnx_out = args.onnx_out
+    # Match --pth behavior: resolve relative paths against --base-path.
+    if not os.path.isabs(onnx_out):
+        onnx_out = os.path.join(base_path, onnx_out)
+
     # Allow passing a directory (common CLI usage)
     if onnx_out.endswith(os.sep) or (os.path.exists(onnx_out) and os.path.isdir(onnx_out)):
         os.makedirs(onnx_out, exist_ok=True)
@@ -163,6 +167,12 @@ def main():
     else:
         out_dir = os.path.dirname(onnx_out)
         if out_dir:
+            if os.path.exists(out_dir) and not os.path.isdir(out_dir):
+                raise RuntimeError(
+                    "Cannot create output directory because a file already exists at that path:\n"
+                    f"  {out_dir}\n\n"
+                    "Choose a different --onnx-out path or rename/delete the conflicting file."
+                )
             os.makedirs(out_dir, exist_ok=True)
 
     torch.onnx.export(

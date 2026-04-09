@@ -51,7 +51,7 @@ NET_NAME="${NET_NAME:-lane_detection_ai}"
 HW_ARCH="${HW_ARCH:-hailo8}"
 
 # Optional: reduce effort for faster iteration vs max accuracy
-OPT_LEVEL="${OPT_LEVEL:-balanced}"     # e.g. fast|balanced|max
+OPT_LEVEL="${OPT_LEVEL:-max}"     # e.g. fast|balanced|max
 CALIB_SAMPLES="${CALIB_SAMPLES:-256}"  # reasonable starting point
 # --------------------------------
 
@@ -73,6 +73,29 @@ OUT_DIR_ABS="$(realpath "${OUT_DIR}")"
 HAR_PATH="${OUT_DIR_ABS}/${NET_NAME}.har"
 HAR_OPT_PATH="${OUT_DIR_ABS}/${NET_NAME}_opt.har"
 HEF_PATH="${OUT_DIR_ABS}/${NET_NAME}.hef"
+ALLS_SCRIPT="${OUT_DIR_ABS}/${NET_NAME}.alls"
+
+cat >"${ALLS_SCRIPT}" <<EOF
+# Hailo Compiler (DFC) Model Script settings
+# Generated automatically by compile_onnx_hef.sh
+EOF
+
+if [[ "${OPT_LEVEL}" == "max" ]]; then
+cat >>"${ALLS_SCRIPT}" <<EOF
+# Maximize performance & auto-layer fusion, minimizing contexts
+performance_param(compiler_optimization_level=max)
+EOF
+elif [[ "${OPT_LEVEL}" == "fast" ]]; then
+cat >>"${ALLS_SCRIPT}" <<EOF
+# Fast compilation, lower optimization
+performance_param(compiler_optimization_level=fast)
+EOF
+else
+cat >>"${ALLS_SCRIPT}" <<EOF
+# Default balanced optimization
+performance_param(compiler_optimization_level=balanced)
+EOF
+fi
 
 have_dfc_hailo_cli() {
   # $1 must be a hailo binary/path
@@ -140,6 +163,7 @@ if [[ -n "${HAILO_DFC_DOCKER_IMAGE:-}" ]]; then
   HAR_PATH="/work/out/${NET_NAME}.har"
   HAR_OPT_PATH="/work/out/${NET_NAME}_opt.har"
   HEF_PATH="/work/out/${NET_NAME}.hef"
+  ALLS_SCRIPT="/work/out/${NET_NAME}.alls"
 fi
 
 # Prefer local DFC hailo binary if available (common when DFC is installed in a conda env)
@@ -246,35 +270,103 @@ import onnx
 from onnx import helper
 
 
-def main() -> int:
-  if len(sys.argv) != 3:
-    print("Usage: patch_onnx_for_hailo.py <onnx_in> <onnx_out>", file=sys.stderr)
-    return 2
+def make_unique_name(base: str, taken: set[str]) -> str:
+  i = 1
+  while True:
+    candidate = f"{base}__ssa_{i}"
+    if candidate not in taken:
+      return candidate
+    i += 1
 
-  onnx_in, onnx_out = sys.argv[1:]
-  m = onnx.load(onnx_in)
-  init_map = {i.name: list(i.dims) for i in m.graph.initializer}
 
+def enforce_ssa_names(model: onnx.ModelProto) -> int:
+  # Tracks latest produced tensor for a logical name when exporter reused names.
+  latest_binding: dict[str, str] = {}
+  taken_names: set[str] = set()
+
+  # Reserve existing non-node-output names to avoid collisions.
+  for x in model.graph.input:
+    taken_names.add(x.name)
+  for x in model.graph.initializer:
+    taken_names.add(x.name)
+  for x in model.graph.sparse_initializer:
+    taken_names.add(x.values.name)
+    taken_names.add(x.indices.name)
+
+  renamed = 0
+  produced_once: set[str] = set()
+
+  for node in model.graph.node:
+    # Rewire inputs to latest binding if a name was redefined later.
+    for i, in_name in enumerate(list(node.input)):
+      if in_name in latest_binding:
+        node.input[i] = latest_binding[in_name]
+
+    # Ensure every node output name is unique (SSA).
+    for i, out_name in enumerate(list(node.output)):
+      if not out_name:
+        continue
+
+      if out_name not in produced_once and out_name not in taken_names:
+        produced_once.add(out_name)
+        taken_names.add(out_name)
+        latest_binding[out_name] = out_name
+        continue
+
+      new_name = make_unique_name(out_name, taken_names)
+      node.output[i] = new_name
+      produced_once.add(new_name)
+      taken_names.add(new_name)
+      latest_binding[out_name] = new_name
+      renamed += 1
+
+  # Graph outputs must point to final bound tensor names.
+  for out in model.graph.output:
+    if out.name in latest_binding:
+      out.name = latest_binding[out.name]
+
+  return renamed
+
+
+def add_missing_kernel_shape(model: onnx.ModelProto) -> int:
+  init_map = {i.name: list(i.dims) for i in model.graph.initializer}
   patched = 0
-  for node in m.graph.node:
+
+  for node in model.graph.node:
     if node.op_type not in ("Conv", "ConvTranspose"):
       continue
     if any(a.name == "kernel_shape" for a in node.attribute):
       continue
     if len(node.input) < 2:
       continue
+
     w_name = node.input[1]
     w_dims = init_map.get(w_name)
     if not w_dims or len(w_dims) < 3:
       continue
+
     kernel = w_dims[-2:]
     node.attribute.extend([helper.make_attribute("kernel_shape", kernel)])
     patched += 1
 
+  return patched
+
+
+def main() -> int:
+  if len(sys.argv) != 3:
+    print("Usage: patch_onnx_for_hailo.py <onnx_in> <onnx_out>", file=sys.stderr)
+    return 2
+
+  onnx_in, onnx_out = sys.argv[1:]
+  model = onnx.load(onnx_in)
+
+  ssa_renamed = enforce_ssa_names(model)
+  kernel_patched = add_missing_kernel_shape(model)
+
   base = os.path.basename(onnx_out)
   location = base + ".data"
   onnx.save_model(
-    m,
+    model,
     onnx_out,
     save_as_external_data=True,
     all_tensors_to_one_file=True,
@@ -282,7 +374,11 @@ def main() -> int:
     size_threshold=1024,
   )
 
-  print(f"Patched {patched} Conv/ConvTranspose nodes")
+  # Validate patched model early.
+  onnx.checker.check_model(onnx_out)
+
+  print(f"Renamed duplicated tensor outputs for SSA: {ssa_renamed}")
+  print(f"Patched Conv/ConvTranspose nodes with kernel_shape: {kernel_patched}")
   print(f"Wrote patched ONNX: {onnx_out}")
   return 0
 
@@ -299,13 +395,10 @@ echo "[1/3] Parse ONNX -> HAR"
 "${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" parser onnx \"${ONNX_FOR_PARSE}\" --net-name \"${NET_NAME}\" --hw-arch \"${HW_ARCH}\" --har-path \"${HAR_PATH}\" -y"
 
 echo "[2/3] Optimize (quantize) HAR with calibration"
-if [[ "${OPT_LEVEL}" != "balanced" ]]; then
-  echo "NOTE: OPT_LEVEL=${OPT_LEVEL} is not mapped 1:1 in DFC; running standard quantization." >&2
-fi
-"${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" optimize \"${HAR_PATH}\" --hw-arch \"${HW_ARCH}\" --calib-set-path \"${CALIB_NPY}\" --output-har-path \"${HAR_OPT_PATH}\""
+"${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" optimize \"${HAR_PATH}\" --hw-arch \"${HW_ARCH}\" --calib-set-path \"${CALIB_NPY}\" --model-script \"${ALLS_SCRIPT}\" --output-har-path \"${HAR_OPT_PATH}\""
 
 echo "[3/3] Compile optimized HAR -> HEF"
-"${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" compiler \"${HAR_OPT_PATH}\" --hw-arch \"${HW_ARCH}\" --output-dir \"${OUT_DIR_ABS}\""
+"${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" compiler \"${HAR_OPT_PATH}\" --hw-arch \"${HW_ARCH}\" --model-script \"${ALLS_SCRIPT}\" --output-dir \"${OUT_DIR_ABS}\""
 
 # Normalize output filename to ${HEF_PATH} if the compiler produced a different name.
 if [[ ! -f "${HEF_PATH}" ]]; then
