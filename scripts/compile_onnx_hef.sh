@@ -97,6 +97,32 @@ performance_param(compiler_optimization_level=balanced)
 EOF
 fi
 
+# Optional: append extra ALLS commands (for Hailo-side preprocessing like image_resize/normalization).
+# Usage:
+#   export HAILO_ALLS_EXTRA_FILE=/abs/path/preprocess.alls
+#   export HAILO_ALLS_EXTRA_CMDS=$'normalization(...) \nimage_resize(...)'
+if [[ -n "${HAILO_ALLS_EXTRA_FILE:-}" ]]; then
+  if [[ ! -f "${HAILO_ALLS_EXTRA_FILE}" ]]; then
+    echo "ERROR: HAILO_ALLS_EXTRA_FILE does not exist: ${HAILO_ALLS_EXTRA_FILE}" >&2
+    exit 2
+  fi
+  {
+    echo ""
+    echo "# ---- appended from HAILO_ALLS_EXTRA_FILE ----"
+    cat "${HAILO_ALLS_EXTRA_FILE}"
+    echo "# ---- end appended file ----"
+  } >> "${ALLS_SCRIPT}"
+fi
+
+if [[ -n "${HAILO_ALLS_EXTRA_CMDS:-}" ]]; then
+  {
+    echo ""
+    echo "# ---- appended from HAILO_ALLS_EXTRA_CMDS ----"
+    printf "%b\n" "${HAILO_ALLS_EXTRA_CMDS}"
+    echo "# ---- end appended commands ----"
+  } >> "${ALLS_SCRIPT}"
+fi
+
 have_dfc_hailo_cli() {
   # $1 must be a hailo binary/path
   local hailo_bin="${1:-}"
