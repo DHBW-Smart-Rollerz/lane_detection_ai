@@ -267,7 +267,7 @@ class LaneDetectionAiModel:
             hailo_preprocess = getattr(
                 self.config,
                 "hailo_preprocess",
-                getattr(self.config, "hailo_preprocessor", "baked"),
+                getattr(self.config, "hailo_preprocessor", "pytorch"),
             )
             hailo_decode_mode = str(
                 getattr(self.config, "hailo_decode_mode", "softmax")
@@ -403,12 +403,12 @@ class LaneDetectionAiModel:
         self._hailo_session = _HailoSession(self.config.test_model)
 
         # If your HEF does NOT include preprocessing, keep PyTorch normalization.
-        # Default stays "baked" to preserve current behavior unless configured.
+        # Default stays "pytorch" to preserve current behavior unless configured.
         # Support both keys; many configs in this repo still use `hailo_preprocessor`.
         hailo_preprocess = getattr(
             self.config,
             "hailo_preprocess",
-            getattr(self.config, "hailo_preprocessor", "baked"),
+            getattr(self.config, "hailo_preprocessor", "pytorch"),
         )
         if hailo_preprocess == "baked":
             self.image_transform = None  # feed uint8
