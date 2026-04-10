@@ -12,6 +12,10 @@ from timing.timer import Timer
 
 from lane_detection_ai.model.utils.common import get_config, get_model
 
+# Pre-allocate mean and std as float32 numpy arrays (do this once globally)
+MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
 
 class LaneDetectionAiModel:
     """LaneDetectionAiModel class."""
@@ -93,6 +97,18 @@ class LaneDetectionAiModel:
         """
         self.ort_session = ort.InferenceSession(self.config.test_model)
 
+    def transform(self, image: np.ndarray) -> torch.Tensor:
+        image = image.astype(np.float32) / 255.0
+        image = (image - MEAN) / STD
+
+        # convert HWC (Height, Width, Channels) to CHW (Channels, Height, Width)
+        image = image.transpose(2, 0, 1)
+
+        # convert to contiguous PyTorch tensor (Zero-copy, extremely fast)
+        tensor = torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32)
+
+        return tensor
+
     def predict(self, image: np.ndarray) -> List[np.ndarray]:
         """
         Predict the lanes in the image.
@@ -113,7 +129,7 @@ class LaneDetectionAiModel:
             )
             if image.shape[0] != 3:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-            image = self.image_transform(image)
+            image = self.transform(image)
             image = image[None, :, -self.config.train_height :, :]
 
         with Timer(name="inference", filter_strength=40):
