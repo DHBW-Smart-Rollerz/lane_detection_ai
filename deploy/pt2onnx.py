@@ -75,6 +75,8 @@ if __name__ == "__main__":
         "101next",
         "50wide",
         "101wide",
+        "yolov5n",
+        "yolov5s",
     ]
 
     # if cfg.dataset == "CULane":

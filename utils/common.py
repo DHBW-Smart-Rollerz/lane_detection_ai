@@ -278,6 +278,10 @@ def get_train_loader(cfg):
             aug_scale_min=getattr(cfg, 'aug_scale_min', 0.8),
             aug_scale_max=getattr(cfg, 'aug_scale_max', 1.2),
             aug_rotate_deg=getattr(cfg, 'aug_rotate_deg', 12.0),
+            aug_brightness_min=getattr(cfg, 'aug_brightness_min', 0.7),
+            aug_brightness_max=getattr(cfg, 'aug_brightness_max', 1.3),
+            aug_contrast_min=getattr(cfg, 'aug_contrast_min', 0.7),
+            aug_contrast_max=getattr(cfg, 'aug_contrast_max', 1.3),
         )
 
     else:

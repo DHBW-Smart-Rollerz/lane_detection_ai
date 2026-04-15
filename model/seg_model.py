@@ -17,19 +17,32 @@ class SegHead(torch.nn.Module):
     def __init__(self,backbone, num_lanes):
         super(SegHead, self).__init__()
 
+        if backbone in ['34', '18']:
+            c2, c3, c4 = 128, 256, 512
+        elif backbone == 'yolov5n':
+            c2, c3, c4 = 64, 128, 256
+        elif backbone == 'yolov5s':
+            c2, c3, c4 = 128, 256, 512
+        elif backbone == 'mobilenet-v3-small':
+            c2, c3, c4 = 24, 48, 576
+        elif backbone == 'mobilenet-v3-large':
+            c2, c3, c4 = 40, 112, 960
+        else:
+            c2, c3, c4 = 512, 1024, 2048
+
         self.aux_header2 = torch.nn.Sequential(
-            conv_bn_relu(128, 128, kernel_size=3, stride=1, padding=1) if backbone in ['34','18'] else conv_bn_relu(512, 128, kernel_size=3, stride=1, padding=1),
+            conv_bn_relu(c2, 128, kernel_size=3, stride=1, padding=1),
             conv_bn_relu(128,128,3,padding=1),
             conv_bn_relu(128,128,3,padding=1),
             conv_bn_relu(128,128,3,padding=1),
         )
         self.aux_header3 = torch.nn.Sequential(
-            conv_bn_relu(256, 128, kernel_size=3, stride=1, padding=1) if backbone in ['34','18'] else conv_bn_relu(1024, 128, kernel_size=3, stride=1, padding=1),
+            conv_bn_relu(c3, 128, kernel_size=3, stride=1, padding=1),
             conv_bn_relu(128,128,3,padding=1),
             conv_bn_relu(128,128,3,padding=1),
         )
         self.aux_header4 = torch.nn.Sequential(
-            conv_bn_relu(512, 128, kernel_size=3, stride=1, padding=1) if backbone in ['34','18'] else conv_bn_relu(2048, 128, kernel_size=3, stride=1, padding=1),
+            conv_bn_relu(c4, 128, kernel_size=3, stride=1, padding=1),
             conv_bn_relu(128,128,3,padding=1),
         )
         self.aux_combine = torch.nn.Sequential(

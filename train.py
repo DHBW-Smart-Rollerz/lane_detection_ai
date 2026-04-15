@@ -118,6 +118,8 @@ if __name__ == "__main__":
         "34fca",
         "mobilenet-v3-small",
         "mobilenet-v3-large",
+        "yolov5n",
+        "yolov5s",
     ]
 
     train_loader = get_train_loader(cfg)

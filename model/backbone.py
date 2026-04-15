@@ -1,4 +1,5 @@
 import pdb
+import os
 
 import torch
 import torch.nn.modules
@@ -24,6 +25,7 @@ class resnet(torch.nn.Module):
     def __init__(self, layers, pretrained=False):
         super(resnet, self).__init__()
         self._is_mobilenet_v3 = False
+        self._is_yolov5 = False
         if layers == "9":
             block = torchvision.models.resnet.BasicBlock
             layers = [1, 1, 1, 1]
@@ -68,11 +70,48 @@ class resnet(torch.nn.Module):
             model = torchvision.models.mobilenet_v3_large(
                 weights=weights
             )
+        elif layers in ["yolov5n", "yolov5s"]:
+            self._is_yolov5 = True
+            # Allow using a local clone via YOLOV5_REPO=/path/to/yolov5 for offline clusters.
+            repo = os.environ.get("YOLOV5_REPO", "ultralytics/yolov5")
+            source = "local" if os.path.isdir(repo) else "github"
+            try:
+                model = torch.hub.load(
+                    repo,
+                    layers,
+                    pretrained=pretrained,
+                    autoshape=False,
+                    source=source,
+                    trust_repo=True,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load YOLOv5 backbone '{layers}' from '{repo}' (source={source}). "
+                    "Either set YOLOV5_REPO to a local YOLOv5 clone or ensure network access for torch.hub."
+                ) from exc
         else:
             raise NotImplementedError
 
         if self._is_mobilenet_v3:
             self.features = model.features
+        elif self._is_yolov5:
+            self.yolo_model = model
+            self.yolo_feature_tensors = []
+            self._yolo_hook_handles = []
+
+            if hasattr(self.yolo_model, "model") and hasattr(self.yolo_model.model, "model"):
+                hook_modules = list(self.yolo_model.model.model)
+            elif hasattr(self.yolo_model, "model") and isinstance(
+                self.yolo_model.model, (torch.nn.Sequential, torch.nn.ModuleList)
+            ):
+                hook_modules = list(self.yolo_model.model)
+            else:
+                hook_modules = [self.yolo_model]
+
+            for module in hook_modules:
+                self._yolo_hook_handles.append(
+                    module.register_forward_hook(self._capture_yolo_feature)
+                )
         else:
             self.conv1 = model.conv1
             self.bn1 = model.bn1
@@ -82,6 +121,45 @@ class resnet(torch.nn.Module):
             self.layer2 = model.layer2
             self.layer3 = model.layer3
             self.layer4 = model.layer4
+
+    def _capture_yolo_feature(self, module, inputs, output):
+        stack = [output]
+        while stack:
+            item = stack.pop()
+            if torch.is_tensor(item):
+                if item.dim() == 4:
+                    self.yolo_feature_tensors.append(item)
+            elif isinstance(item, (list, tuple)):
+                stack.extend(item)
+            elif isinstance(item, dict):
+                stack.extend(item.values())
+
+    def _pick_stride_features(self, feature_tensors, in_h, in_w):
+        x2 = None
+        x3 = None
+        x4 = None
+        best_x4_stride = -1
+        for fea in feature_tensors:
+            if fea.shape[-2] <= 0 or fea.shape[-1] <= 0:
+                continue
+            stride_h = max(1, in_h // fea.shape[-2])
+            stride_w = max(1, in_w // fea.shape[-1])
+            stride = min(stride_h, stride_w)
+            if x2 is None and stride >= 8:
+                x2 = fea
+            if x3 is None and stride >= 16:
+                x3 = fea
+            if stride >= 32 and stride > best_x4_stride:
+                best_x4_stride = stride
+                x4 = fea
+
+        if x4 is None and feature_tensors:
+            x4 = feature_tensors[-1]
+        if x2 is None:
+            x2 = x4
+        if x3 is None:
+            x3 = x4
+        return x2, x3, x4
 
     def forward(self, x):
         if self._is_mobilenet_v3:
@@ -102,6 +180,14 @@ class resnet(torch.nn.Module):
             if x3 is None:
                 x3 = x4
             return x2, x3, x4
+
+        if self._is_yolov5:
+            in_h, in_w = x.shape[-2], x.shape[-1]
+            self.yolo_feature_tensors = []
+            _ = self.yolo_model(x)
+            if len(self.yolo_feature_tensors) == 0:
+                raise RuntimeError("YOLOv5 forward produced no 4D feature maps for backbone extraction.")
+            return self._pick_stride_features(self.yolo_feature_tensors, in_h, in_w)
 
         x = self.conv1(x)
         x = self.bn1(x)

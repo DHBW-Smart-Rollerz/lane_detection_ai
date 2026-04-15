@@ -123,6 +123,8 @@ if __name__ == "__main__":
         "50wide",
         "101wide",
         "mobilenet-v3-small",
+        "yolov5n",
+        "yolov5s",
     ]
 
     if cfg.dataset == "CULane":

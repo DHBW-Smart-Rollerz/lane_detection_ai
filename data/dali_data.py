@@ -217,6 +217,10 @@ def ExternalSourceTrainPipeline(
     aug_scale_min=0.8,
     aug_scale_max=1.2,
     aug_rotate_deg=12.0,
+    aug_brightness_min=0.7,
+    aug_brightness_max=1.3,
+    aug_contrast_min=0.7,
+    aug_contrast_max=1.3,
 ):
     pipe = Pipeline(batch_size, num_threads, device_id)
     with pipe:
@@ -261,8 +265,8 @@ def ExternalSourceTrainPipeline(
         # Augmentation
         images = fn.brightness_contrast(
             images,
-            brightness=fn.random.uniform(range=(0.7, 1.3)),
-            contrast=fn.random.uniform(range=(0.7, 1.3)),
+            brightness=fn.random.uniform(range=(aug_brightness_min, aug_brightness_max)),
+            contrast=fn.random.uniform(range=(aug_contrast_min, aug_contrast_max)),
         )
 
         images = fn.noise.gaussian(
@@ -296,7 +300,14 @@ def ExternalSourceTrainPipeline(
             fill_value=230,
             normalized=True,
         )
+        white_images = fn.gaussian_blur(white_images, window_size=15, sigma=5.0)
         images = apply_white * white_images + (1 - apply_white) * images
+        # images = apply_white * white_images + (1 - apply_white) * images
+
+        apply_blur = fn.random.coin_flip(probability=0.3)
+        blurred_images = fn.gaussian_blur(images, window_size=5, sigma=2.0)
+        images = apply_blur * blurred_images + (1 - apply_blur) * images
+
 
         images = fn.cast(images, dtype=types.UINT8)
         images = fn.resize(
@@ -400,6 +411,10 @@ class TrainCollect:
         aug_scale_min=0.8,
         aug_scale_max=1.2,
         aug_rotate_deg=12.0,
+        aug_brightness_min=0.7,
+        aug_brightness_max=1.3,
+        aug_contrast_min=0.7,
+        aug_contrast_max=1.3,
     ):
         eii = LaneExternalIterator(
             data_root,
@@ -469,6 +484,10 @@ class TrainCollect:
                 aug_scale_min=aug_scale_min,
                 aug_scale_max=aug_scale_max,
                 aug_rotate_deg=aug_rotate_deg,
+                aug_brightness_min=aug_brightness_min,
+                aug_brightness_max=aug_brightness_max,
+                aug_contrast_min=aug_contrast_min,
+                aug_contrast_max=aug_contrast_max,
             )
         self.pii = DALIGenericIterator(
             pipe,

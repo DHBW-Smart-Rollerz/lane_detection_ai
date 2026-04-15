@@ -24,6 +24,7 @@ class parsingNet(torch.nn.Module):
         input_height=None,
         input_width=None,
         fc_norm=False,
+        mlp_mid_dim=512,
     ):
         super(parsingNet, self).__init__()
         self.num_grid_row = num_grid_row
@@ -38,7 +39,6 @@ class parsingNet(torch.nn.Module):
         self.dim3 = 2 * self.num_cls_row * self.num_lane_on_row
         self.dim4 = 2 * self.num_cls_col * self.num_lane_on_col
         self.total_dim = self.dim1 + self.dim2 + self.dim3 + self.dim4
-        mlp_mid_dim = 512
         self.input_dim = input_height // 32 * input_width // 32 * 8
 
         print(self.input_dim, mlp_mid_dim, self.total_dim)
@@ -63,6 +63,10 @@ class parsingNet(torch.nn.Module):
             pool_in_channels = 576
         elif backbone == "mobilenet-v3-large":
             pool_in_channels = 960
+        elif backbone == "yolov5n":
+            pool_in_channels = 256
+        elif backbone == "yolov5s":
+            pool_in_channels = 512
         else:
             pool_in_channels = 2048
         self.pool = torch.nn.Conv2d(pool_in_channels, 8, 1)
@@ -166,4 +170,5 @@ def get_model(cfg):
         input_height=cfg.train_height,
         input_width=cfg.train_width,
         fc_norm=cfg.fc_norm,
+        mlp_mid_dim=getattr(cfg, "mlp_mid_dim", 512),
     ).cuda()
