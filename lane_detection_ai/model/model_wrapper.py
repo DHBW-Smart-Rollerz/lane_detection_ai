@@ -481,7 +481,8 @@ class LaneDetectionAiModel:
             with Timer(name="inference", filter_strength=5):
                 if self.config.test_model.endswith(".pth"):
                     with torch.inference_mode():
-                        pred = self.net(x)
+                        with Timer(name="inference_call", filter_strength=5):
+                            pred = self.net(x)
                 elif self.config.test_model.endswith(".onnx"):
                     x_np = x.cpu().numpy()
                     out = self.ort_session.run(None, {"input": x_np})

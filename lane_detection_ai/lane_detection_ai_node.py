@@ -98,7 +98,11 @@ class LaneDetectionNode(SmartyNode):
         new_msg = std_msgs.msg.Header()
         new_msg.stamp = time_stamp
         self.new_image_publisher.publish(new_msg)
-        self.execute_prediction(msg)
+
+        try:
+            self.execute_prediction(msg)
+        except Exception as e:
+            self.get_logger().info(e)
 
     @timer.Timer(name="total", filter_strength=40)
     def execute_prediction(self, msg: sensor_msgs.msg.Image):
