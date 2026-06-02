@@ -113,7 +113,7 @@ def main():
     ap.add_argument("--model-config", required=True, help="e.g. config.py")
     ap.add_argument("--pth", required=True, help="Path to .pth checkpoint (absolute or relative to base-path)")
     ap.add_argument("--onnx-out", required=True, help="Output .onnx path")
-    ap.add_argument("--opset", type=int, default=17)
+    ap.add_argument("--opset", type=int, default=18)
     args = ap.parse_args()
 
     base_path = args.base_path
@@ -185,6 +185,7 @@ def main():
         input_names=["input"],
         output_names=["loc_row", "exist_row", "loc_col", "exist_col"],
         dynamic_axes=None,  # keep fixed shapes for easier Hailo compilation
+        dynamo=False,
     )
 
     print(f"Exported ONNX to: {onnx_out}")

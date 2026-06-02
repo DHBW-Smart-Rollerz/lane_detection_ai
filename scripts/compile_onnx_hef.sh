@@ -15,7 +15,7 @@ Environment:
   NET_NAME: network name (default: lane_detection_ai)
   HW_ARCH:  hailo8 | hailo8l | ... (default: hailo8)
   OPT_LEVEL: fast | balanced | max (default: balanced)
-  CALIB_SAMPLES: number of calibration samples to use (default: 256)
+  CALIB_SAMPLES: number of calibration samples to use (default: 1024)
 
 DFC CLI selection (local):
   HAILO_DFC_HAILO_BIN: absolute path to the DFC `hailo` binary (highest priority)
@@ -51,8 +51,8 @@ NET_NAME="${NET_NAME:-lane_detection_ai}"
 HW_ARCH="${HW_ARCH:-hailo8}"
 
 # Optional: reduce effort for faster iteration vs max accuracy
-OPT_LEVEL="${OPT_LEVEL:-max}"     # e.g. fast|balanced|max
-CALIB_SAMPLES="${CALIB_SAMPLES:-256}"  # reasonable starting point
+OPT_LEVEL="${OPT_LEVEL:-max}"     # e.g. default|max
+CALIB_SAMPLES="${CALIB_SAMPLES:-1024}"
 # --------------------------------
 
 if [[ ! -f "${ONNX_PATH}" ]]; then
@@ -85,17 +85,19 @@ cat >>"${ALLS_SCRIPT}" <<EOF
 # Maximize performance & auto-layer fusion, minimizing contexts
 performance_param(compiler_optimization_level=max)
 EOF
-elif [[ "${OPT_LEVEL}" == "fast" ]]; then
+elif [[ "${OPT_LEVEL}" == "default" ]]; then
 cat >>"${ALLS_SCRIPT}" <<EOF
-# Fast compilation, lower optimization
-performance_param(compiler_optimization_level=fast)
-EOF
-else
-cat >>"${ALLS_SCRIPT}" <<EOF
-# Default balanced optimization
-performance_param(compiler_optimization_level=balanced)
+# Default compilation, lower optimization
+performance_param(compiler_optimization_level=0)
 EOF
 fi
+
+cat >>"${ALLS_SCRIPT}" <<EOF
+# Optimizes and compresses the model before compilation (Level 2 is a standard aggressive baseline)
+model_optimization_flavor(optimization_level=2, compression_level=2)
+EOF
+
+
 
 # Optional: append extra ALLS commands (for Hailo-side preprocessing like image_resize/normalization).
 # Usage:
@@ -214,6 +216,15 @@ fi
 CALIB_NPY="${OUT_DIR_ABS}/${NET_NAME}_calib.npy"
 PATCHED_ONNX="${OUT_DIR_ABS}/${NET_NAME}_hailo.onnx"
 ONNX_FOR_PARSE="${ONNX_PATH}"
+CALIBSET_SIZE="${HAILO_CALIBSET_SIZE:-${CALIB_SAMPLES}}"
+
+# Force optimizer calibration-set size explicitly. Some DFC versions default to 64
+# unless `model_optimization_config(calibration, calibset_size=...)` is provided.
+cat >>"${ALLS_SCRIPT}" <<EOF
+
+# Calibration dataset usage
+model_optimization_config(calibration, calibset_size=${CALIBSET_SIZE})
+EOF
 
 echo "[0/3] Build calibration set (.npy) from ${CALIB_DIR_ABS}"
 # DFC expects a .npy file of pre-processed images shaped: (N, H, W, C)
@@ -255,13 +266,17 @@ def main() -> int:
   else:
     raise RuntimeError(f"Unsupported ONNX input shape: {dims}")
 
-  patterns = ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
+  patterns = ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff", "*.webp"]
   paths = []
   for pat in patterns:
-    paths.extend(glob.glob(os.path.join(calib_dir, pat)))
-  paths = sorted(paths)[:max_samples]
+    paths.extend(glob.glob(os.path.join(calib_dir, "**", pat), recursive=True))
+  # Deduplicate while preserving deterministic order.
+  paths = sorted(set(paths))[:max_samples]
   if not paths:
     raise RuntimeError(f"No calibration images found in {calib_dir}")
+
+  if len(paths) < max_samples:
+    print(f"[WARN] Requested {max_samples} calibration samples but found only {len(paths)} images.")
 
   arr = np.empty((len(paths), h, w, c), dtype=np.uint8)
   for i, p in enumerate(paths):
@@ -284,6 +299,19 @@ if __name__ == "__main__":
 PY
 
 "${conda_run_prefix[@]}" python "${CALIB_SCRIPT}" "${ONNX_PATH_ABS}" "${CALIB_DIR_ABS}" "${CALIB_NPY}" "${CALIB_SAMPLES}"
+
+echo "[0/3] Calibration array sanity check"
+"${conda_run_prefix[@]}" python - <<PY
+import numpy as np
+arr = np.load(r"${CALIB_NPY}")
+print(f"Loaded calib npy: shape={arr.shape}, dtype={arr.dtype}")
+PY
+
+echo "[0/3] Effective calibration config"
+echo "CALIB_SAMPLES=${CALIB_SAMPLES}"
+echo "HAILO_CALIBSET_SIZE=${CALIBSET_SIZE}"
+echo "Using model script: ${ALLS_SCRIPT}"
+sed -n '1,200p' "${ALLS_SCRIPT}"
 
 echo "[0/3] Patch ONNX for Hailo parser (add missing kernel_shape)"
 
