@@ -6,7 +6,7 @@ This is a quick guide to setting up Hailo 8 Accelerator and needed software pack
 Before you start setting up Hailo tools for using AI Accelerator power, you of course need the accelerator itself. It will most likely be in a m.2 NVMe format.
 
 > [!info] Connectivity to system
-> In order to use the Hailo 8 Accelerator, it must be connected to PCIe. This can only either be achieved by plugging in the Accelerator to a m.2 NVMe m-type slot or by using a m.2 NVMe to Thunderbold adapter (only suitable if system supports thunderbold).
+> In order to use the Hailo 8 Accelerator, it must be connected to PCIe. This can only either be achieved by plugging in the Accelerator to a m.2 NVMe m-type slot or by using a m.2 NVMe to Thunderbolt adapter (only suitable if system supports thunderbolt).
 
 If your system only has one m.2 NVMe slot, you might consider using a m.2 NVMe to USB adapter for mass storage and using internal slot for the Accelerator.
 ## Step 1: Install `dkms`, `build-essential` and `python3.<version>-dev`
@@ -52,7 +52,7 @@ PyHailoRT is a python package which wraps the C/C++ API that is called from your
 
 To run your models on Hailo device, you need to install the modules from the `hailort-<version>-<python_tag>-<abi_tag>-<platform_tag>` file (download from <a href="https://hailo.ai/developer-zone/software-downloads/?product=ai_accelerators&device=hailo_8_8l">here</a>). Then execute this:
 
-```python
+```bash
 pip install ./hailort-<version>-<python_tag>-<abi_tag>-<platform_tag>.whl
 ```
 
