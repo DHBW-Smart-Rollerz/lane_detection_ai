@@ -5,7 +5,7 @@ This is a quick guide to setting up Hailo 8 Accelerator and needed software pack
 
 Before you start setting up Hailo tools for using AI Accelerator power, you of course need the accelerator itself. It will most likely be in a m.2 NVMe format.
 
-> [!info] Connectivity to system
+> Connectivity to system
 > In order to use the Hailo 8 Accelerator, it must be connected to PCIe. This can only either be achieved by plugging in the Accelerator to a m.2 NVMe m-type slot or by using a m.2 NVMe to Thunderbolt adapter (only suitable if system supports thunderbolt).
 
 If your system only has one m.2 NVMe slot, you might consider using a m.2 NVMe to USB adapter for mass storage and using internal slot for the Accelerator.
@@ -32,7 +32,7 @@ sudo apt install python3.<version>-dev
 
 The Dataflow Compiler is needed for model conversion and compilation to Hailo binary format. In order to install it, follow <a href="https://hailo.ai/developer-zone/documentation/dataflow-compiler-v3-33-0/?sp_referrer=install/install.html">this installation guide</a>. 
 
-> [!warning] Virtual Environments
+> Virtual Environments
 > To install the dataflow compiler python wheel, it is highly recommended to create a virtual environment with the supported python version from the downloads <a href="https://hailo.ai/developer-zone/software-downloads/?product=ai_accelerators&device=hailo_8_8l">here</a>. From here on, always make sure that you have the created environment activated when installing wheels and packages in further steps.
 ## Step 3: Install HailoRT and Hailo PCIe Driver
 
