@@ -1,100 +1,99 @@
-# Ultra-Fast-Lane-Detection-V2
-PyTorch implementation of the paper "[Ultra Fast Deep Lane Detection with Hybrid Anchor Driven Ordinal Classification](https://arxiv.org/abs/2206.07389)".
+# DHBW Smart-Rollerz Lane Detection AI
 
+This project is a custom implementation based on [Ultra-Fast-Lane-Detection-V2](https://github.com/cfzd/Ultra-Fast-Lane-Detection-V2) specifically tailored for the DHBW Smart-Rollerz team. It integrates PyTorch Lightning, Optuna for hyperparameter optimization, MLflow for experiment tracking, and a full suite of SLURM scripts for containerized execution on a DGX cluster using Enroot/Pyxis.
 
-![](ufldv2.png "vis")
+## Project Structure & Features
+- **PyTorch Lightning**: Modular training loops in `train_lightning.py`.
+- **Optuna Integration**: Automated hyperparameter search in `train_optuna_lightning.py`.
+- **MLflow Tracking**: Integrated experiment logging and a UI hosted via SLURM (`mlflow_ui.slurm`).
+- **SLURM Workflows**: End-to-end containerized pipelines for building, training, evaluating, and tracking.
+- **Docker/Pyxis**: Docker-based build process (`docker_build_train.slurm`) which exports the image to `.sqsh` for efficient cluster execution using `srun`.
 
-# Demo 
-<a href="https://youtu.be/VkvpoHlaMe0
-" target="_blank"><img src="http://img.youtube.com/vi/VkvpoHlaMe0/0.jpg" 
-alt="Demo" width="240" height="180" border="10" /></a>
+## Getting Started
 
-
-# Install
-Please see [INSTALL.md](./INSTALL.md)
-
-# Get started
-Please modify the `data_root` in any configs you would like to run. We will use `configs/culane_res18.py` as an example.
-
-To train the model, you can run:
+### 1. Build the Container Environment
+Before running any scripts, build the Docker image and convert it to a Pyxis-compatible `.sqsh` file:
+```bash
+sbatch docker_build_train.slurm
 ```
-python train.py configs/culane_res18.py --log_path /path/to/your/work/dir
-```
-or
-```
-python -m torch.distributed.launch --nproc_per_node=8 train.py configs/culane_res18.py --log_path /path/to/your/work/dir
-```
-It should be noted that if you use different number of GPUs, the learning rate should be adjusted accordingly. The configs' learning rates correspond to 8-GPU training on CULane and CurveLanes datasets. **If you want to train on CULane or CurveLanes with single GPU, please decrease the learning rate by a factor of 1/8.** On the Tusimple, the learning rate corresponds to single GPU training.
-# Trained models
-We provide trained models on CULane, Tusimple, and CurveLanes.
+This uses `Dockerfile` to create the image and exports it to `~/containers/lane_detection_ai_training.sqsh`.
+**Note:** Make sure to update user-specific variables in the `.slurm` file (see the "Customizing User Variables" section).
 
-| Dataset    | Backbone | F1   | Link |
-|------------|----------|-------|------|
-| CULane     | ResNet18 | 75.0  |  [Google](https://drive.google.com/file/d/1oEjJraFr-3lxhX_OXduAGFWalWa6Xh3W/view?usp=sharing)/[Baidu](https://pan.baidu.com/s/1Z3W4y3eA9xrXJ51-voK4WQ?pwd=pdzs)    |
-| CULane     | ResNet34 | 76.0  |   [Google](https://drive.google.com/file/d/1AjnvAD3qmqt_dGPveZJsLZ1bOyWv62Yj/view?usp=sharing)/[Baidu](https://pan.baidu.com/s/1PHNpVHboQlmpjM5NXl9IxQ?pwd=jw8f)   |
-| Tusimple   | ResNet18 | 96.11 |   [Google](https://drive.google.com/file/d/1Clnj9-dLz81S3wXiYtlkc4HVusCb978t/view?usp=sharing)/[Baidu](https://pan.baidu.com/s/1umHo0RZIAQ1l_FzL2aZomw?pwd=6xs1)   |
-| Tusimple   | ResNet34 | 96.24 |   [Google](https://drive.google.com/file/d/1pkz8homK433z39uStGK3ZWkDXrnBAMmX/view?usp=sharing)/[Baidu](https://pan.baidu.com/s/1Eq7oxnDoE0vcQGzs1VsGZQ?pwd=b88p)   |
-| CurveLanes | ResNet18 | 80.42 |   [Google](https://drive.google.com/file/d/1VfbUvorKKMG4tUePNbLYPp63axgd-8BX/view?usp=sharing)/[Baidu](https://pan.baidu.com/s/1jCqKqgSQdh6nwC5pYpYO1A?pwd=urhe)   |
-| CurveLanes | ResNet34 | 81.34 |   [Google](https://drive.google.com/file/d/1O1kPSr85Icl2JbwV3RBlxWZYhLEHo8EN/view?usp=sharing)/[Baidu](https://pan.baidu.com/s/1fk2Wg-1QoHXTnTlasSM6uQ?pwd=4mn3)   |
+### 2. Configuration & Data Preparation
+- **Config Files**: Model hyper-parameters and dataset paths are set in the `configs/` directory (e.g., `configs/smartrollerz_res18_bev.py`).
+- **Data Conversion**: You can convert CVAT annotations or format your datasets using our provided SLURM scripts:
+  - `convert_cvat.slurm` & `convert_cvat_bev.slurm`
+  - `draw_labels_on_images.slurm`
+  - `resize_labels.slurm`
 
-For evaluation, run
-```Shell
-mkdir tmp
+### 3. Training the Model
+You have two options for training: standard training and hyperparameter optimization.
 
-python test.py configs/culane_res18.py --test_model /path/to/your/model.pth --test_work_dir ./tmp
+#### Standard PyTorch Lightning Training
+To train the model using a predefined configuration:
+```bash
+sbatch train_lightning.slurm
 ```
+It logs metrics with MLflow and saves checkpoints to the shared results directory. Ensure `OWNER_RESULTS_DIR` and `LOCAL_PROJECT_DIR` in the `.slurm` script are correctly pointing to your directories.
 
-Same as training, multi-gpu evaluation is also supported.
-```Shell
-mkdir tmp
-
-python -m torch.distributed.launch --nproc_per_node=8 test.py configs/culane_res18.py --test_model /path/to/your/model.pth --test_work_dir ./tmp
+#### Optuna Hyperparameter Optimization
+To run an automated hyperparameter sweep with Optuna:
+```bash
+sbatch train_optuna_lightning.slurm
 ```
+This script launches `train_optuna_lightning.py`. It uses a shared SQLite database for Optuna. You can adjust the number of trials (`--optuna_n_trials`), sampler, and other arguments directly inside the SLURM script.
 
-# Visualization
-We provide a script to visualize the detection results. Run the following commands to visualize on the testing set of CULane.
-```
-python demo.py configs/culane_res18.py --test_model /path/to/your/culane_res18.pth
+### 4. Checkpoint Conversion & Inference
+
+#### Convert Lightning Checkpoint to PyTorch `.pth`
+Training produces `.ckpt` files containing optimizer states. To convert a `.ckpt` model into a standard `.pth` state dictionary for inference or TensorRT deployment:
+```bash
+sbatch convert_ckpt_to_pth.slurm
 ```
 
-# Tensorrt Deploy
-We also provide a python script to do tensorrt inference on videos.
-
-1. Convert to onnx model
-    ```
-    python deploy/pt2onnx.py --config_path configs/culane_res34.py --model_path weights/culane_res34.pth
-    ```
-    Or you can download the onnx model using the following script: https://github.com/PINTO0309/PINTO_model_zoo/blob/main/324_Ultra-Fast-Lane-Detection-v2/download.sh. And copy `ufldv2_culane_res34_320x1600.onnx` to `weights/ufldv2_culane_res34_320x1600.onnx`
-
-2. Convert to tensorrt model
-
-    Use trtexec to convert engine model
-
-    `trtexec --onnx=weights/culane_res34.onnx --saveEngine=weights/culane_res34.engine`
-
-3. Do inference
-    ```
-    python deploy/trt_infer.py --config_path  configs/culane_res34.py --engine_path weights/culane_res34.engine --video_path example.mp4
-    ```
-
-# Citation
-
-```BibTeX
-@InProceedings{qin2020ultra,
-author = {Qin, Zequn and Wang, Huanyu and Li, Xi},
-title = {Ultra Fast Structure-aware Deep Lane Detection},
-booktitle = {The European Conference on Computer Vision (ECCV)},
-year = {2020}
-}
-
-@ARTICLE{qin2022ultrav2,
-  author={Qin, Zequn and Zhang, Pengyi and Li, Xi},
-  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
-  title={Ultra Fast Deep Lane Detection With Hybrid Anchor Driven Ordinal Classification}, 
-  year={2022},
-  volume={},
-  number={},
-  pages={1-14},
-  doi={10.1109/TPAMI.2022.3182097}
-}
+#### Single Image Inference
+To test the model on a single image:
+```bash
+sbatch inference.slurm
 ```
+Update the `--image` and `--weights` parameters inside the script beforehand.
+
+#### Batch Inference
+To run inference on an entire folder of images and generate output overlays:
+```bash
+sbatch batch_inference.slurm
+```
+Remember to update the `TRAINING_RUN_FOLDER` and set `USE_BEV=true` (or `false`) based on your configuration. It automatically discovers the best checkpoint in your run directory.
+
+### 5. Tracking Results with MLflow
+To view training metrics, logs, and Optuna results, start the MLflow UI on the cluster:
+```bash
+sbatch mlflow_ui.slurm
+```
+Check the output log (`slurm-outs/slurm-out-mlflow-*.out`). It will display an SSH port-forwarding command (e.g., `ssh -N -L 5050:<node_hostname>:5050 <your_username>@<dgx_server>`). Replace `<node_hostname>`, `<your_username>`, and `<dgx_server>` with your actual details, run that on your local machine, and open `http://localhost:5050` in your browser.
+
+To stop the UI:
+```bash
+scancel <JOB_ID>
+```
+Or run `sbatch stop_mlflow_ui.slurm` if available.
+
+## Overview of SLURM Scripts
+
+| Script | Purpose |
+| ------ | ------- |
+| `docker_build_train.slurm` | Builds the Docker image and creates a Pyxis `.sqsh` file. |
+| `train_lightning.slurm` | Runs standard model training using PyTorch Lightning. |
+| `train_optuna_lightning.slurm` | Runs hyperparameter search with Optuna. |
+| `convert_ckpt_to_pth.slurm` | Extracts the raw model weights `.pth` from a Lightning `.ckpt`. |
+| `inference.slurm` | Runs inference on a single test image. |
+| `batch_inference.slurm` | Runs inference over a folder of images, picking the best checkpoint. |
+| `mlflow_ui.slurm` | Starts the MLflow UI server for tracking metrics and trials. |
+| `convert_cvat*.slurm` | Converts CVAT annotations into the required dataset format. |
+| `add_user_folder.slurm` | Manages file/folder permissions across different cluster users. |
+
+## Customizing User Variables
+Many `.slurm` scripts include a `USER="<name>"` or hardcoded directory paths at the top. **Always update these variables** to match your DGX account setup before submitting a job. For collaborative runs, ensure `OWNER_PROJECT_DIR` and `OWNER_RESULTS_DIR` point to the shared team location.
+
+## Acknowledgment
+Original Ultra-Fast-Lane-Detection-V2 implementation by Zequn Qin, et al. For details on the original methodology, refer to their [paper](https://arxiv.org/abs/2206.07389).
