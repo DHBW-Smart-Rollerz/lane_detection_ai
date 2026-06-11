@@ -23,6 +23,8 @@ This repository contains the ros2 jazzy package for the ai lane detection based 
 
 ### HailoRT (optional, required for Hailo backend)
 
+For a detailed installation guide, see [HAILO_INSTALL.md](HAILO_INSTALL.md).
+
 If your model config enables the Hailo backend, this node imports `hailo_platform` (HailoRT Python bindings). Those bindings **must be installed for the exact Python interpreter that executes the ROS2 entrypoint script**.
 
 Install the HailoRT wheel **matching that Python version** (for Jazzy this is typically CPython 3.12, so you need a `cp312` wheel). Example:
