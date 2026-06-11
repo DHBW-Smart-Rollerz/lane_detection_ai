@@ -17,7 +17,7 @@ Before running any scripts, build the Docker image and convert it to a Pyxis-com
 sbatch docker_build_train.slurm
 ```
 This uses `Dockerfile` to create the image and exports it to `~/containers/lane_detection_ai_training.sqsh`.
-**Note:** Make sure to update the `USER` and `SQSH_PATH` variables in the `.slurm` file to match your account.
+**Note:** Make sure to update user-specific variables in the `.slurm` file (see the "Customizing User Variables" section).
 
 ### 2. Configuration & Data Preparation
 - **Config Files**: Model hyper-parameters and dataset paths are set in the `configs/` directory (e.g., `configs/smartrollerz_res18_bev.py`).
@@ -70,7 +70,7 @@ To view training metrics, logs, and Optuna results, start the MLflow UI on the c
 ```bash
 sbatch mlflow_ui.slurm
 ```
-Check the output log (`slurm-outs/slurm-out-mlflow-*.out`). It will display an SSH port-forwarding command (e.g., `ssh -N -L 5050:<node_hostname>:5050 <your_username>@<dgx_server>`). Run that on your local machine and open `http://localhost:5050` in your browser.
+Check the output log (`slurm-outs/slurm-out-mlflow-*.out`). It will display an SSH port-forwarding command (e.g., `ssh -N -L 5050:<node_hostname>:5050 <your_username>@<dgx_server>`). Replace `<node_hostname>`, `<your_username>`, and `<dgx_server>` with your actual details, run that on your local machine, and open `http://localhost:5050` in your browser.
 
 To stop the UI:
 ```bash
