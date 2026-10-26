@@ -19,8 +19,14 @@ import cv2
 import numpy as np
 import torch
 
-from lane_detection_ai.model.model_wrapper import MEAN, STD, LaneDetectionAiModel
-from lane_detection_ai.model.utils.common import get_config, get_model
+from lane_detection_ai.model.checkpoint import load_checkpoint
+from lane_detection_ai.model.decode import decode_lanes, merge_lanes
+from lane_detection_ai.model.utils.common import (
+    IMAGE_MEAN,
+    IMAGE_STD,
+    get_config,
+    get_model,
+)
 
 PACKAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 LANE_NAMES = ["left", "center", "right"]
@@ -97,17 +103,17 @@ def lane_score(pred: dict, lane: int, target: str) -> torch.Tensor:
 
 
 def preprocess(image: np.ndarray, cfg) -> torch.Tensor:
-    """Apply the same preprocessing as LaneDetectionAiModel.predict()."""
+    """Apply the same preprocessing as LaneDetectionAiModel._preprocess()."""
     image = cv2.resize(
         image, (cfg.train_width, int(cfg.train_height / cfg.crop_ratio))
     )
     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-    image = (image.astype(np.float32) / 255.0 - MEAN) / STD
+    image = (image.astype(np.float32) / 255.0 - IMAGE_MEAN) / IMAGE_STD
     tensor = torch.from_numpy(image.transpose(2, 0, 1).copy())
     return tensor[None, :, -cfg.train_height :, :]
 
 
-def overlay(image: np.ndarray, cam: np.ndarray, points: list, lane: int) -> np.ndarray:
+def overlay(image: np.ndarray, cam: np.ndarray, points, lane: int) -> np.ndarray:
     """Draw the heatmap and the predicted points of a lane onto the image."""
     h, w = image.shape[:2]
     cam = cv2.resize(cam, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -138,12 +144,7 @@ def main():
     if not cfg.test_model.endswith(".pth"):
         raise ValueError("Grad-CAM needs gradients -> use a .pth model, not ONNX/HEF")
     net = get_model(cfg)
-    state_dict = torch.load(
-        os.path.join(PACKAGE_DIR, cfg.test_model), map_location="cpu", weights_only=True
-    )["model"]
-    missing, unexpected = net.load_state_dict(state_dict, strict=False)
-    if missing:
-        print(f"WARNING: {len(missing)} weights missing in checkpoint: {missing[:5]} ...")
+    load_checkpoint(net, os.path.join(PACKAGE_DIR, cfg.test_model))
     net.eval()
 
     grad_cam = GradCam(net, getattr(net.model, args.layer))
@@ -156,19 +157,21 @@ def main():
         image = cv2.imread(files[idx], cv2.IMREAD_GRAYSCALE)
         pred = net(preprocess(image, cfg).requires_grad_(True))
 
-        with torch.no_grad():
-            coords = LaneDetectionAiModel.pred2coords_optimized(
-                {k: v.detach().clone() for k, v in pred.items()},
+        lanes = merge_lanes(
+            *decode_lanes(
+                {k: v.detach().numpy() for k, v in pred.items()},
                 cfg.row_anchor,
                 cfg.col_anchor,
-                original_image_width=image.shape[1],
-                original_image_height=image.shape[0],
+                image.shape[1],
+                image.shape[0],
             )
+        )
 
         tiles = []
         for lane in range(cfg.num_lanes):
             cam = grad_cam(lane_score(pred, lane, args.target))
-            tiles.append(overlay(image, cam, coords[lane] + coords[lane + 3], lane))
+            points = lanes[lane] if lanes[lane] is not None else []
+            tiles.append(overlay(image, cam, points, lane))
 
         name = f"{idx:05d}_{args.layer}_{args.target}.jpg"
         cv2.imwrite(os.path.join(args.output, name), np.hstack(tiles))
