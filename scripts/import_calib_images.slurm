@@ -6,19 +6,21 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=slurm-outs/slurm-copy-resize-bev-%j.out
 
+# Submit from the repository root (the slurm-outs/ directory must exist).
+
 set -euo pipefail
 
-# --- Config ---
-CONTAINER_IMAGE="/raid/homes/inf23054/sanel/containers/lane_detection_ai_run.sqsh"
-SRC_ROOT="/raid/homes/inf23054/sanel/lane_detection_ai_training/dataset/smartrollerz_bev/data/rosbags"
-DST_ROOT="/raid/homes/inf23054/sanel/lane_detection_ai/hailo/opt_samples"
+# --- Config (override via: sbatch --export=ALL,KEY=VALUE ...) ---
+PROJECT_ROOT="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
+CONTAINER_IMAGE="${CONTAINER_IMAGE:-$(dirname "${PROJECT_ROOT}")/containers/lane_detection_ai_run.sqsh}"
+SRC_ROOT="${SRC_ROOT:-$(dirname "${PROJECT_ROOT}")/lane_detection_ai_training/dataset/smartrollerz_bev/data/rosbags}"
+DST_ROOT="${DST_ROOT:-${PROJECT_ROOT}/hailo/opt_samples}"
 
 # Set target size here (or override via: sbatch --export=TARGET_WIDTH=...,TARGET_HEIGHT=... ...)
 TARGET_WIDTH="${TARGET_WIDTH:-512}"
 TARGET_HEIGHT="${TARGET_HEIGHT:-384}"
 
 mkdir -p "$DST_ROOT"
-mkdir -p "$(dirname "$SLURM_OUT_FILE" 2>/dev/null || echo slurm-outs)" || true
 
 echo "[INFO] Using container: $CONTAINER_IMAGE"
 echo "[INFO] Source: $SRC_ROOT"
@@ -28,8 +30,8 @@ echo "[INFO] Resize to: ${TARGET_WIDTH}x${TARGET_HEIGHT}"
 # Run everything inside Pyxis container
 srun \
   --container-image="$CONTAINER_IMAGE" \
-  --container-mounts="/raid/homes/inf23054/sanel:/raid/homes/inf23054/sanel" \
-  --container-workdir="/raid/homes/inf23054/sanel" \
+  --container-mounts="${SRC_ROOT}:${SRC_ROOT}:ro,${DST_ROOT}:${DST_ROOT}" \
+  --container-workdir="${DST_ROOT}" \
   bash -lc "
     set -euo pipefail
 

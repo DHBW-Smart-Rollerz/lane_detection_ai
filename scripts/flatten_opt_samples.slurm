@@ -6,16 +6,18 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=slurm-outs/slurm-flatten-opt-samples-%j.out
 
+# Submit from the repository root (the slurm-outs/ directory must exist).
+
 set -euo pipefail
 
-CONTAINER_IMAGE="/raid/homes/inf23054/sanel/containers/lane_detection_ai_run.sqsh"
-OPT_SAMPLES_ROOT="/raid/homes/inf23054/sanel/lane_detection_ai/hailo/opt_samples"
+PROJECT_ROOT="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
+CONTAINER_IMAGE="${CONTAINER_IMAGE:-$(dirname "${PROJECT_ROOT}")/containers/lane_detection_ai_run.sqsh}"
+OPT_SAMPLES_ROOT="${OPT_SAMPLES_ROOT:-${PROJECT_ROOT}/hailo/opt_samples}"
 
 # Set DRY_RUN=1 in sbatch --export to preview actions without moving files.
 DRY_RUN="${DRY_RUN:-0}"
 
 mkdir -p "$OPT_SAMPLES_ROOT"
-mkdir -p "/raid/homes/inf23054/sanel/lane_detection_ai/slurm-outs"
 
 echo "[INFO] Using container: $CONTAINER_IMAGE"
 echo "[INFO] Flatten root: $OPT_SAMPLES_ROOT"
@@ -23,8 +25,8 @@ echo "[INFO] DRY_RUN: $DRY_RUN"
 
 srun \
   --container-image="$CONTAINER_IMAGE" \
-  --container-mounts="/raid/homes/inf23054/sanel:/raid/homes/inf23054/sanel" \
-  --container-workdir="/raid/homes/inf23054/sanel" \
+  --container-mounts="${OPT_SAMPLES_ROOT}:${OPT_SAMPLES_ROOT}" \
+  --container-workdir="${OPT_SAMPLES_ROOT}" \
   bash -lc "
     set -euo pipefail
     export OPT_SAMPLES_ROOT='$OPT_SAMPLES_ROOT'
@@ -81,11 +83,11 @@ print(f'[INFO] Name collisions resolved: {collisions}')
 print(f'[INFO] Non-image files skipped: {skipped}')
 PY
 
-    if [[ "$DRY_RUN" == "0" ]]; then
+    if [[ \"\$DRY_RUN\" == \"0\" ]]; then
       # Remove now-empty directories under opt_samples (keep root).
-      find "$OPT_SAMPLES_ROOT" -mindepth 1 -type d -empty -delete
-      echo "[INFO] Removed empty subfolders."
+      find \"\$OPT_SAMPLES_ROOT\" -mindepth 1 -type d -empty -delete
+      echo '[INFO] Removed empty subfolders.'
     fi
 
-    echo "[DONE] Flattening finished."
+    echo '[DONE] Flattening finished.'
   "

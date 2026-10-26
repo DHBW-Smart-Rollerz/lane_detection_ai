@@ -1,195 +1,106 @@
+"""Export a trained model (.pth) to ONNX with the normalization in the graph.
+
+The exported network takes a uint8 RGB image [1, 3, H, W] (0..255) as input, so
+the Hailo compiler can be calibrated with raw images and the node doesn't have to
+normalize on the host. The outputs are loc_row, exist_row, loc_col and exist_col.
+
+Usage:
+    python3 scripts/convert_pth_onnx.py --base-path . \
+        --model-config config/model_config.py --pth models/model.pth \
+        --onnx-out build/lane_detection_ai.onnx
+"""
+
 import argparse
-import os
 import sys
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 
-_PKG_ROOT = Path(__file__).resolve().parents[1]
-if str(_PKG_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PKG_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lane_detection_ai.model.utils.common import get_config, get_model
+from lane_detection_ai.model.checkpoint import load_checkpoint
+from lane_detection_ai.model.utils.common import (
+    IMAGE_MEAN,
+    IMAGE_STD,
+    get_config,
+    get_model,
+)
 
 
-class PreprocessAndModel(nn.Module):
-    """
-    Wraps the lane model with preprocessing so the exported graph can take uint8 input.
+class PreprocessAndModel(torch.nn.Module):
+    """Wraps the model with the normalization of uint8 RGB input."""
 
-    Input:
-      - uint8 tensor in NCHW, range [0..255], RGB
-    """
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: torch.nn.Module) -> None:
+        """Initialize the wrapper.
+
+        Args:
+            model: The lane detection network.
+        """
         super().__init__()
         self.model = model
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-        self.register_buffer("mean", mean)
-        self.register_buffer("std", std)
+        self.register_buffer("mean", torch.from_numpy(IMAGE_MEAN).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.from_numpy(IMAGE_STD).view(1, 3, 1, 1))
 
-    def forward(self, x_uint8: torch.Tensor):
-        x = x_uint8.to(torch.float32) / 255.0
-        x = (x - self.mean) / self.std
+    def forward(
+        self, x_uint8: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Normalize the image and run the network (outputs in a fixed order)."""
+        x = (x_uint8.to(torch.float32) / 255.0 - self.mean) / self.std
         pred = self.model(x)
-        # Keep a stable output order for downstream compilation/runtime
         return pred["loc_row"], pred["exist_row"], pred["loc_col"], pred["exist_col"]
 
 
-def _load_checkpoint_model_state(pth_path: str) -> dict:
-    ckpt = torch.load(pth_path, map_location="cpu")
-    if isinstance(ckpt, dict) and "model" in ckpt:
-        return ckpt["model"]
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        return ckpt["state_dict"]
-    # fallback: sometimes the checkpoint is directly a state_dict
-    return ckpt
+def _resolve(base_path: Path, path: Path) -> Path:
+    return path if path.is_absolute() else base_path / path
 
 
-def _adapt_state_dict_for_model(
-    state_dict: dict, target_state_dict: dict[str, torch.Tensor]
-) -> tuple[dict[str, torch.Tensor], tuple[int, int, int]]:
-    """Best-effort key adaptation for checkpoints trained with wrappers/prefixes.
+def main() -> None:
+    """Export the model given on the command line."""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--base-path", type=Path, required=True, help="Package path (as the node)"
+    )
+    parser.add_argument(
+        "--model-config", type=Path, required=True, help="Model config path"
+    )
+    parser.add_argument(
+        "--pth", type=Path, required=True, help="Checkpoint, relative to base path"
+    )
+    parser.add_argument(
+        "--onnx-out",
+        type=Path,
+        required=True,
+        help="Output .onnx file or directory, relative to base path",
+    )
+    parser.add_argument("--opset", type=int, default=18)
+    args = parser.parse_args()
 
-    Returns:
-        (best_candidate_state, (matched, missing, unexpected))
-    """
-    raw_items = {k: v for k, v in state_dict.items() if torch.is_tensor(v)}
-    target_keys = set(target_state_dict.keys())
-
-    prefixes = [
-        "module.",
-        "model.",
-        "net.",
-        "network.",
-        "lane_detection_ai.module.",
-        "lane_detection_ai.",
-    ]
-
-    def _strip_once(key: str, pfx: str) -> str:
-        return key[len(pfx):] if key.startswith(pfx) else key
-
-    def _strip_iterative(key: str) -> str:
-        out = key
-        changed = True
-        while changed:
-            changed = False
-            for p in prefixes:
-                if out.startswith(p):
-                    out = out[len(p) :]
-                    changed = True
-        return out
-
-    candidates: list[dict[str, torch.Tensor]] = [dict(raw_items)]
-
-    for p in prefixes:
-        remap = {_strip_once(k, p): v for k, v in raw_items.items()}
-        candidates.append(remap)
-
-    candidates.append({_strip_iterative(k): v for k, v in raw_items.items()})
-
-    def _score(cand: dict[str, torch.Tensor]) -> tuple[int, int, int]:
-        cand_keys = set(cand.keys())
-        matched = len(cand_keys & target_keys)
-        missing = len(target_keys - cand_keys)
-        unexpected = len(cand_keys - target_keys)
-        return matched, missing, unexpected
-
-    best = None
-    best_score = (-1, 10**9, 10**9)
-    for cand in candidates:
-        s = _score(cand)
-        if s[0] > best_score[0] or (s[0] == best_score[0] and (s[1] + s[2]) < (best_score[1] + best_score[2])):
-            best = cand
-            best_score = s
-
-    assert best is not None
-    return best, best_score
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--base-path", required=True, help="Package base path (same as used by the node)")
-    ap.add_argument("--model-config", required=True, help="e.g. config.py")
-    ap.add_argument("--pth", required=True, help="Path to .pth checkpoint (absolute or relative to base-path)")
-    ap.add_argument("--onnx-out", required=True, help="Output .onnx path")
-    ap.add_argument("--opset", type=int, default=18)
-    args = ap.parse_args()
-
-    base_path = args.base_path
-    cfg = get_config(os.path.join(base_path, args.model_config))
-
+    cfg = get_config(str(_resolve(args.base_path, args.model_config)))
     net = get_model(cfg)
-    net.eval()
+    load_checkpoint(net, str(_resolve(args.base_path, args.pth)))
+    wrapped = PreprocessAndModel(net.eval()).eval()
 
-    pth_path = args.pth
-    if not os.path.isabs(pth_path):
-        pth_path = os.path.join(base_path, pth_path)
+    onnx_out = _resolve(args.base_path, args.onnx_out)
+    if onnx_out.is_dir() or str(args.onnx_out).endswith("/"):
+        onnx_out /= "lane_detection_ai.onnx"
+    onnx_out.parent.mkdir(parents=True, exist_ok=True)
 
-    state = _load_checkpoint_model_state(pth_path)
-
-    if not isinstance(state, dict):
-        raise RuntimeError(
-            f"Unsupported checkpoint structure in {pth_path}: expected dict-like state_dict, got {type(state).__name__}"
-        )
-
-    best_state, score = _adapt_state_dict_for_model(state, net.state_dict())
-    missing, unexpected = net.load_state_dict(best_state, strict=False)
-
-    total_target = max(1, len(net.state_dict()))
-    coverage = 1.0 - (len(missing) / total_target)
-    if coverage < 0.90:
-        raise RuntimeError(
-            "Checkpoint/model mismatch while preparing ONNX export.\n"
-            f"file={pth_path}\n"
-            f"matched={score[0]}, missing={len(missing)}, unexpected={len(unexpected)}, coverage={coverage:.3f}\n"
-            f"sample_missing={list(missing)[:12]}\n"
-            f"sample_unexpected={list(unexpected)[:12]}\n"
-            "Likely causes: wrong backbone/head config, wrong checkpoint file, or incompatible training code."
-        )
-
-    wrapped = PreprocessAndModel(net).eval()
-
-    h = int(cfg.train_height)
-    w = int(cfg.train_width)
-
-    dummy = torch.zeros((1, 3, h, w), dtype=torch.uint8)
-
-    onnx_out = args.onnx_out
-    # Match --pth behavior: resolve relative paths against --base-path.
-    if not os.path.isabs(onnx_out):
-        onnx_out = os.path.join(base_path, onnx_out)
-
-    # Allow passing a directory (common CLI usage)
-    if onnx_out.endswith(os.sep) or (os.path.exists(onnx_out) and os.path.isdir(onnx_out)):
-        os.makedirs(onnx_out, exist_ok=True)
-        onnx_out = os.path.join(onnx_out, "lane_detection_ai.onnx")
-    else:
-        out_dir = os.path.dirname(onnx_out)
-        if out_dir:
-            if os.path.exists(out_dir) and not os.path.isdir(out_dir):
-                raise RuntimeError(
-                    "Cannot create output directory because a file already exists at that path:\n"
-                    f"  {out_dir}\n\n"
-                    "Choose a different --onnx-out path or rename/delete the conflicting file."
-                )
-            os.makedirs(out_dir, exist_ok=True)
-
+    height, width = int(cfg.train_height), int(cfg.train_width)
     torch.onnx.export(
         wrapped,
-        dummy,
-        onnx_out,
+        torch.zeros((1, 3, height, width), dtype=torch.uint8),
+        str(onnx_out),
         export_params=True,
         opset_version=args.opset,
         do_constant_folding=True,
         input_names=["input"],
         output_names=["loc_row", "exist_row", "loc_col", "exist_col"],
-        dynamic_axes=None,  # keep fixed shapes for easier Hailo compilation
+        dynamic_axes=None,  # fixed shapes for the Hailo compiler
         dynamo=False,
     )
 
     print(f"Exported ONNX to: {onnx_out}")
-    print(f"Input shape: (1,3,{h},{w}) uint8 RGB")
+    print(f"Input shape: (1, 3, {height}, {width}) uint8 RGB")
 
 
 if __name__ == "__main__":

@@ -14,8 +14,13 @@ Inputs:
 Environment:
   NET_NAME: network name (default: lane_detection_ai)
   HW_ARCH:  hailo8 | hailo8l | ... (default: hailo8)
-  OPT_LEVEL: fast | balanced | max (default: balanced)
+  OPT_LEVEL: max | default (compiler optimization level, default: max)
   CALIB_SAMPLES: number of calibration samples to use (default: 1024)
+  HAILO_CALIBSET_SIZE: calibration set size of the optimizer (default: CALIB_SAMPLES)
+  CROP_RATIO: crop_ratio of the model config (default: 1.0). The calibration images
+              are resized to (W, H / CROP_RATIO) and the bottom H rows are used,
+              like the node preprocesses its input.
+  HAILO_ALLS_EXTRA_FILE / HAILO_ALLS_EXTRA_CMDS: extra model script commands
 
 DFC CLI selection (local):
   HAILO_DFC_HAILO_BIN: absolute path to the DFC `hailo` binary (highest priority)
@@ -51,8 +56,9 @@ NET_NAME="${NET_NAME:-lane_detection_ai}"
 HW_ARCH="${HW_ARCH:-hailo8}"
 
 # Optional: reduce effort for faster iteration vs max accuracy
-OPT_LEVEL="${OPT_LEVEL:-max}"     # e.g. default|max
+OPT_LEVEL="${OPT_LEVEL:-max}"     # max | default
 CALIB_SAMPLES="${CALIB_SAMPLES:-1024}"
+CROP_RATIO="${CROP_RATIO:-1.0}"
 # --------------------------------
 
 if [[ ! -f "${ONNX_PATH}" ]]; then
@@ -61,6 +67,10 @@ if [[ ! -f "${ONNX_PATH}" ]]; then
 fi
 if [[ ! -d "${CALIB_DIR}" ]]; then
   echo "ERROR: Calibration dir not found: ${CALIB_DIR}" >&2
+  exit 2
+fi
+if [[ "${OPT_LEVEL}" != "max" && "${OPT_LEVEL}" != "default" ]]; then
+  echo "ERROR: OPT_LEVEL must be 'max' or 'default', got: ${OPT_LEVEL}" >&2
   exit 2
 fi
 
@@ -166,56 +176,46 @@ select_local_hailo_dfc_bin() {
   echo ""
 }
 
-RUNNER=( )
 WORKDIR="$(mktemp -d)"
 cleanup() {
   rm -rf "${WORKDIR}" || true
 }
 trap cleanup EXIT
 
-if [[ -n "${HAILO_DFC_DOCKER_IMAGE:-}" ]]; then
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "ERROR: docker not found, but HAILO_DFC_DOCKER_IMAGE is set." >&2
-    exit 2
-  fi
-  # Run compiler inside container; mount inputs/outputs.
-  RUNNER=(docker run --rm \
-    --user "$(id -u):$(id -g)" \
-    -v "${ONNX_PATH_ABS}:/work/model.onnx:ro" \
-    -v "${CALIB_DIR_ABS}:/work/calib:ro" \
-    -v "${OUT_DIR_ABS}:/work/out" \
-    -w /work \
-    "${HAILO_DFC_DOCKER_IMAGE}" bash -lc)
-  ONNX_PATH="/work/model.onnx"
-  CALIB_DIR="/work/calib"
-  HAR_PATH="/work/out/${NET_NAME}.har"
-  HAR_OPT_PATH="/work/out/${NET_NAME}_opt.har"
-  HEF_PATH="/work/out/${NET_NAME}.hef"
-  ALLS_SCRIPT="/work/out/${NET_NAME}.alls"
-fi
-
-# Prefer local DFC hailo binary if available (common when DFC is installed in a conda env)
+# Files are written on the host in OUT_DIR_ABS. The DFC commands get the paths as
+# seen by the runner (identical locally, mounted under /work in docker).
 HAILO_BIN="$(select_local_hailo_dfc_bin)"
 if [[ -n "${HAILO_BIN}" ]] && have_dfc_hailo_cli "${HAILO_BIN}"; then
   # Avoid login shells here (they may trigger unrelated env scripts).
   RUNNER=(bash -c)
+  DFC_CMD="${HAILO_BIN}"
+  RUN_OUT_DIR="${OUT_DIR_ABS}"
 elif [[ -n "${HAILO_DFC_DOCKER_IMAGE:-}" ]]; then
-  : # Docker runner already configured above
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: docker not found, but HAILO_DFC_DOCKER_IMAGE is set." >&2
+    exit 2
+  fi
+  RUNNER=(docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -v "${OUT_DIR_ABS}:/work/out" \
+    -w /work \
+    "${HAILO_DFC_DOCKER_IMAGE}" bash -lc)
+  DFC_CMD="hailo"
+  RUN_OUT_DIR="/work/out"
 else
   echo "ERROR: Hailo Dataflow Compiler (DFC) CLI not found." >&2
-  echo "This machine currently resolves `hailo` to the HailoRT utility (run/parse-hef), which cannot compile ONNX->HEF." >&2
+  echo "The 'hailo' command of HailoRT (run/parse-hef) cannot compile ONNX to HEF." >&2
   echo "" >&2
-  echo "You said DFC is installed in a conda env; try ONE of:" >&2
-  echo "  - Activate the env then re-run:  conda activate ${HAILO_DFC_CONDA_ENV:-hailo_env}" >&2
-  echo "  - Or point directly at the env prefix: export HAILO_DFC_PREFIX=/home/.../anaconda3/envs/${HAILO_DFC_CONDA_ENV:-hailo_env}" >&2
-  echo "  - Or point directly at the binary: export HAILO_DFC_HAILO_BIN=/home/.../anaconda3/envs/${HAILO_DFC_CONDA_ENV:-hailo_env}/bin/hailo" >&2
-  echo "  - Or use Docker: export HAILO_DFC_DOCKER_IMAGE=<your_dfc_image>" >&2
+  echo "Make the DFC available with ONE of:" >&2
+  echo "  - Activate its conda env and re-run:  conda activate ${HAILO_DFC_CONDA_ENV:-hailo_env}" >&2
+  echo "  - Point to the env prefix: export HAILO_DFC_PREFIX=/path/to/envs/${HAILO_DFC_CONDA_ENV:-hailo_env}" >&2
+  echo "  - Point to the binary: export HAILO_DFC_HAILO_BIN=/path/to/envs/${HAILO_DFC_CONDA_ENV:-hailo_env}/bin/hailo" >&2
+  echo "  - Use docker: export HAILO_DFC_DOCKER_IMAGE=<your_dfc_image>" >&2
   exit 2
 fi
 
 CALIB_NPY="${OUT_DIR_ABS}/${NET_NAME}_calib.npy"
 PATCHED_ONNX="${OUT_DIR_ABS}/${NET_NAME}_hailo.onnx"
-ONNX_FOR_PARSE="${ONNX_PATH}"
 CALIBSET_SIZE="${HAILO_CALIBSET_SIZE:-${CALIB_SAMPLES}}"
 
 # Force optimizer calibration-set size explicitly. Some DFC versions default to 64
@@ -229,9 +229,10 @@ EOF
 echo "[0/3] Build calibration set (.npy) from ${CALIB_DIR_ABS}"
 # DFC expects a .npy file of pre-processed images shaped: (N, H, W, C)
 # We'll derive H/W from the ONNX input shape and load RGB uint8 images.
+# Use the DFC conda env for the helper scripts if it exists, else the current python.
 conda_run_prefix=()
-if command -v conda >/dev/null 2>&1; then
-  # Prefer hailo_env if present; otherwise just use current python.
+if command -v conda >/dev/null 2>&1 \
+  && conda env list | awk '{print $1}' | grep -qx "${HAILO_DFC_CONDA_ENV:-hailo_env}"; then
   conda_run_prefix=(conda run -n "${HAILO_DFC_CONDA_ENV:-hailo_env}")
 fi
 
@@ -247,12 +248,13 @@ import onnx
 
 
 def main() -> int:
-  if len(sys.argv) != 5:
-    print("Usage: build_calib_set.py <onnx_path> <calib_dir> <out_npy> <max_samples>", file=sys.stderr)
+  if len(sys.argv) != 6:
+    print("Usage: build_calib_set.py <onnx_path> <calib_dir> <out_npy> <max_samples> <crop_ratio>", file=sys.stderr)
     return 2
 
-  onnx_path, calib_dir, out_path, max_samples_s = sys.argv[1:]
+  onnx_path, calib_dir, out_path, max_samples_s, crop_ratio_s = sys.argv[1:]
   max_samples = int(max_samples_s)
+  crop_ratio = float(crop_ratio_s)
 
   m = onnx.load(onnx_path)
   inp = m.graph.input[0]
@@ -284,8 +286,9 @@ def main() -> int:
     if img is None:
       raise RuntimeError(f"Failed to read image: {p}")
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
-    arr[i] = img
+    # Same as the node: resize to (W, H / crop_ratio) and use the bottom H rows
+    img = cv2.resize(img, (w, int(h / crop_ratio)), interpolation=cv2.INTER_LINEAR)
+    arr[i] = img[-h:]
 
   os.makedirs(os.path.dirname(out_path), exist_ok=True)
   np.save(out_path, arr)
@@ -298,7 +301,7 @@ if __name__ == "__main__":
   raise SystemExit(main())
 PY
 
-"${conda_run_prefix[@]}" python "${CALIB_SCRIPT}" "${ONNX_PATH_ABS}" "${CALIB_DIR_ABS}" "${CALIB_NPY}" "${CALIB_SAMPLES}"
+"${conda_run_prefix[@]}" python "${CALIB_SCRIPT}" "${ONNX_PATH_ABS}" "${CALIB_DIR_ABS}" "${CALIB_NPY}" "${CALIB_SAMPLES}" "${CROP_RATIO}"
 
 echo "[0/3] Calibration array sanity check"
 "${conda_run_prefix[@]}" python - <<PY
@@ -309,6 +312,7 @@ PY
 
 echo "[0/3] Effective calibration config"
 echo "CALIB_SAMPLES=${CALIB_SAMPLES}"
+echo "CROP_RATIO=${CROP_RATIO}"
 echo "HAILO_CALIBSET_SIZE=${CALIBSET_SIZE}"
 echo "Using model script: ${ALLS_SCRIPT}"
 sed -n '1,200p' "${ALLS_SCRIPT}"
@@ -443,16 +447,21 @@ PY
 
 "${conda_run_prefix[@]}" python "${PATCH_SCRIPT}" "${ONNX_PATH_ABS}" "${PATCHED_ONNX}"
 
-ONNX_FOR_PARSE="${PATCHED_ONNX}"
+# Paths as seen by the DFC runner
+RUN_ONNX="${RUN_OUT_DIR}/$(basename "${PATCHED_ONNX}")"
+RUN_CALIB_NPY="${RUN_OUT_DIR}/$(basename "${CALIB_NPY}")"
+RUN_ALLS="${RUN_OUT_DIR}/$(basename "${ALLS_SCRIPT}")"
+RUN_HAR="${RUN_OUT_DIR}/$(basename "${HAR_PATH}")"
+RUN_HAR_OPT="${RUN_OUT_DIR}/$(basename "${HAR_OPT_PATH}")"
 
 echo "[1/3] Parse ONNX -> HAR"
-"${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" parser onnx \"${ONNX_FOR_PARSE}\" --net-name \"${NET_NAME}\" --hw-arch \"${HW_ARCH}\" --har-path \"${HAR_PATH}\" -y"
+"${RUNNER[@]}" "\"${DFC_CMD}\" parser onnx \"${RUN_ONNX}\" --net-name \"${NET_NAME}\" --hw-arch \"${HW_ARCH}\" --har-path \"${RUN_HAR}\" -y"
 
 echo "[2/3] Optimize (quantize) HAR with calibration"
-"${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" optimize \"${HAR_PATH}\" --hw-arch \"${HW_ARCH}\" --calib-set-path \"${CALIB_NPY}\" --model-script \"${ALLS_SCRIPT}\" --output-har-path \"${HAR_OPT_PATH}\""
+"${RUNNER[@]}" "\"${DFC_CMD}\" optimize \"${RUN_HAR}\" --hw-arch \"${HW_ARCH}\" --calib-set-path \"${RUN_CALIB_NPY}\" --model-script \"${RUN_ALLS}\" --output-har-path \"${RUN_HAR_OPT}\""
 
 echo "[3/3] Compile optimized HAR -> HEF"
-"${RUNNER[@]}" "\"${HAILO_BIN:-hailo}\" compiler \"${HAR_OPT_PATH}\" --hw-arch \"${HW_ARCH}\" --model-script \"${ALLS_SCRIPT}\" --output-dir \"${OUT_DIR_ABS}\""
+"${RUNNER[@]}" "\"${DFC_CMD}\" compiler \"${RUN_HAR_OPT}\" --hw-arch \"${HW_ARCH}\" --model-script \"${RUN_ALLS}\" --output-dir \"${RUN_OUT_DIR}\""
 
 # Normalize output filename to ${HEF_PATH} if the compiler produced a different name.
 if [[ ! -f "${HEF_PATH}" ]]; then

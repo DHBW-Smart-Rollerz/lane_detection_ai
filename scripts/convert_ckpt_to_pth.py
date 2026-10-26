@@ -1,44 +1,56 @@
-import torch
+"""Convert a training checkpoint (.ckpt) into a plain state dict (.pth).
+
+Checkpoints of the training scripts also pickle the training config, whose classes
+(`utils.config.Config`) are not available here. They are replaced by a stand-in
+class while loading, and only the network weights are saved.
+
+Usage:
+    python3 scripts/convert_ckpt_to_pth.py models/model.ckpt models/model.pth
+"""
+
+import argparse
 import sys
 import types
+from pathlib import Path
 
-# 1. Create a dummy class to trick pickle
-class DummyConfig(dict):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+import torch
 
-# 2. Create fake modules and inject them into Python's system modules
-# This intercepts pickle's attempt to look for 'utils' and 'utils.config'
-dummy_utils = types.ModuleType('utils')
-dummy_config = types.ModuleType('config')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Assign our dummy class to the expected name inside the fake module
-dummy_config.Config = DummyConfig
-dummy_config.ConfigDict = DummyConfig
-dummy_utils.config = dummy_config
+from lane_detection_ai.model.checkpoint import extract_state_dict
 
-# Register the fake modules
-sys.modules['utils'] = dummy_utils
-sys.modules['utils.config'] = dummy_config
-sys.modules['config'] = dummy_config
 
-# ---------------------------------------------------------
-# Now run your standard conversion code!
-# ---------------------------------------------------------
+class _ConfigStandIn(dict):
+    """Replaces the pickled config classes of the training code."""
 
-ckpt_path = '/home/smartrollerz/smarty_workspace/src/lane_detection_ai/models/07.03.2026.ckpt'
-pth_path = '/home/smartrollerz/smarty_workspace/src/lane_detection_ai/models/07.03.2026.pth'
 
-# Load it (with weights_only=False so it accepts the dummy object)
-checkpoint = torch.load(ckpt_path, map_location=torch.device('cpu'), weights_only=False)
+def _register_config_stand_ins() -> None:
+    utils_module = types.ModuleType("utils")
+    config_module = types.ModuleType("utils.config")
+    config_module.Config = _ConfigStandIn
+    config_module.ConfigDict = _ConfigStandIn
+    utils_module.config = config_module
+    sys.modules.setdefault("utils", utils_module)
+    sys.modules.setdefault("utils.config", config_module)
+    sys.modules.setdefault("config", config_module)
 
-# Extract just the weights
-if 'state_dict' in checkpoint:
-    state_dict = checkpoint['state_dict']
-else:
-    state_dict = checkpoint
 
-# Save ONLY the weights as a clean PyTorch dictionary
-torch.save(state_dict, pth_path)
+def main() -> None:
+    """Convert the checkpoint given on the command line."""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("ckpt", type=Path, help="Training checkpoint (.ckpt)")
+    parser.add_argument("pth", type=Path, help="Output file (.pth)")
+    args = parser.parse_args()
 
-print(f"Successfully extracted weights and saved to {pth_path}")
+    _register_config_stand_ins()
+    # The checkpoint contains pickled objects: only convert trusted files
+    checkpoint = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    state_dict = extract_state_dict(checkpoint)
+
+    args.pth.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(state_dict, args.pth)
+    print(f"Saved {len(state_dict)} tensors to {args.pth}")
+
+
+if __name__ == "__main__":
+    main()
