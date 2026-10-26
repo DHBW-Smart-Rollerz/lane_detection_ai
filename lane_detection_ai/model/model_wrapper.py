@@ -1,406 +1,267 @@
-#!/usr/bin/env python3
-import os
-from typing import List
+"""Lane detection model with PyTorch, ONNX Runtime and Hailo-8 backends."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 import torch
-import torchvision.transforms as transforms
-from camera_preprocessing.transformation.calibration import Calibration
 from timing.timer import Timer
 
-from lane_detection_ai.model.utils.common import get_config, get_model
+from lane_detection_ai.model.checkpoint import load_checkpoint
+from lane_detection_ai.model.decode import decode_lanes, merge_lanes
+from lane_detection_ai.model.hailo import OUTPUT_KEYS, HailoOutputMapper, HailoSession
+from lane_detection_ai.model.utils.common import (
+    IMAGE_MEAN,
+    IMAGE_STD,
+    get_config,
+    get_model,
+)
 
-# Pre-allocate mean and std as float32 numpy arrays (do this once globally)
-MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+SUPPORTED_BACKBONES = {
+    "9",
+    "18",
+    "34",
+    "50",
+    "101",
+    "152",
+    "50next",
+    "101next",
+    "50wide",
+    "101wide",
+}
+DECODE_MODES = {"softmax", "argmax"}
 
 
 class LaneDetectionAiModel:
-    """LaneDetectionAiModel class."""
+    """Lane detection on images, backend chosen by the model file extension.
 
-    def __init__(self, base_path: str, model_config_path: str):
+    - `.pth`: PyTorch on the CPU (convert training checkpoints with
+      scripts/convert_ckpt_to_pth.py)
+    - `.onnx`: ONNX Runtime on the CPU (float32 input, or uint8 input if the
+      normalization is part of the exported graph)
+    - `.hef`: Hailo-8 accelerator with HailoRT
+
+    Optional model config keys:
+        assume_bgr: Convert color images from BGR to RGB (default False, also
+            read from the old key hailo_assume_bgr).
+        decode_mode: "softmax" (precise, default) or "argmax" (faster), also read
+            from the old key hailo_decode_mode.
+        hailo_preprocess: "baked" if the HEF contains the normalization and expects
+            uint8 RGB input (default, what scripts/convert_pth_onnx.py exports),
+            "pytorch" to normalize on the host. Also read from hailo_preprocessor.
+        hailo_output_names: Dict from "loc_row", "exist_row", "loc_col" and
+            "exist_col" to the HEF output names, if they can't be found
+            automatically.
+    """
+
+    def __init__(
+        self,
+        base_path: str,
+        model_config_path: str,
+        log: Callable[[str], None] = print,
+    ) -> None:
+        """Load the model config and the model.
+
+        Args:
+            base_path: The base path of the package; the config path and the
+                test_model path of the config are relative to it.
+            model_config_path: The path of the model config.
+            log: Function to log messages with.
         """
-        Initialize the LaneDetectionAiModel class.
-
-        Arguments:
-            base_path -- The base path to the model.
-            model_config_path -- The path to the model configuration file.
-        """
-        torch.backends.cudnn.benchmark = True
-
-        self.camera_calibration = Calibration()
-        self.camera_calibration.setup()
-        self.config = get_config(os.path.join(base_path, model_config_path))
-        self.config.test_model = os.path.join(base_path, self.config.test_model)
-        self.image_transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-            ]
-        )
-        self.load_model()
-
-    def load_model(self):
-        """
-        Load the model.
-
-        Returns:
-            torch.nn.Module -- The model.
-        """
-
+        self._log = log
+        self.config = get_config(str(Path(base_path) / model_config_path))
+        self.config.test_model = str(Path(base_path) / self.config.test_model)
         self.config.batch_size = 1
 
-        assert self.config.backbone in [
-            "9",
-            "18",
-            "34",
-            "50",
-            "101",
-            "152",
-            "50next",
-            "101next",
-            "50wide",
-            "101wide",
-        ]
+        if self.config.backbone not in SUPPORTED_BACKBONES:
+            msg = f"Unsupported backbone {self.config.backbone!r}"
+            raise ValueError(msg)
 
-        if self.config.test_model.endswith(".pth"):
-            self._load_pytorch_model()
-        elif self.config.test_model.endswith(".onnx"):
-            self._load_onnx_model()
+        cfg = self.config
+        self._assume_bgr = bool(
+            getattr(cfg, "assume_bgr", getattr(cfg, "hailo_assume_bgr", False))
+        )
+        self._decode_mode = str(
+            getattr(cfg, "decode_mode", getattr(cfg, "hailo_decode_mode", "softmax"))
+        ).lower()
+        if self._decode_mode not in DECODE_MODES:
+            msg = f"Unsupported decode_mode {self._decode_mode!r}, use {DECODE_MODES}"
+            raise ValueError(msg)
+
+        self._net: torch.nn.Module | None = None
+        self._ort_session = None
+        self._hailo_session: HailoSession | None = None
+        self._hailo_outputs: HailoOutputMapper | None = None
+        self._uint8_input = False
+        self._channels_last = False
+
+        model_path = self.config.test_model
+        suffix = Path(model_path).suffix
+        if suffix == ".pth":
+            self.backend = "pytorch"
+            self._load_pytorch_model(model_path)
+        elif suffix == ".onnx":
+            self.backend = "onnxruntime"
+            self._load_onnx_model(model_path)
+        elif suffix == ".hef":
+            self.backend = "hailo"
+            self._load_hailo_model(model_path)
         else:
-            raise ValueError(f"Unsupported model file format: {self.config.test_model}")
+            msg = f"Unsupported model file format: {model_path}"
+            raise ValueError(msg)
 
-    def _load_pytorch_model(self):
-        """
-        Load the PyTorch model.
-        """
-        self.net = get_model(self.config)
+        self._log_startup_configuration()
 
-        state_dict = torch.load(
-            self.config.test_model, map_location="cpu", weights_only=True
-        )["model"]
-        compatible_state_dict = {}
-        for k, v in state_dict.items():
-            if "lane_detection_ai.module." in k:
-                compatible_state_dict[k[7:]] = v
-            else:
-                compatible_state_dict[k] = v
+    def _load_pytorch_model(self, model_path: str) -> None:
+        self._net = get_model(self.config)
+        load_checkpoint(self._net, model_path, log=self._log)
+        self._net.eval()
 
-        self.net.load_state_dict(compatible_state_dict, strict=False)
-        self.net.eval()
+    def _load_onnx_model(self, model_path: str) -> None:
+        self._ort_session = ort.InferenceSession(
+            model_path, providers=["CPUExecutionProvider"]
+        )
+        model_input = self._ort_session.get_inputs()[0]
+        self._ort_input_name = model_input.name
+        # Exports of scripts/convert_pth_onnx.py contain the normalization
+        self._uint8_input = model_input.type == "tensor(uint8)"
 
-    def _load_onnx_model(self):
-        """
-        Load the ONNX model.
-        """
-        self.ort_session = ort.InferenceSession(self.config.test_model)
+        output_names = [o.name for o in self._ort_session.get_outputs()]
+        if set(OUTPUT_KEYS) <= set(output_names):
+            self._ort_output_names = list(OUTPUT_KEYS)
+        else:
+            # Unnamed outputs are expected in the export order of convert_pth_onnx.py
+            self._ort_output_names = output_names[: len(OUTPUT_KEYS)]
 
-    def transform(self, image: np.ndarray) -> torch.Tensor:
-        image = image.astype(np.float32) / 255.0
-        image = (image - MEAN) / STD
+    def _load_hailo_model(self, model_path: str) -> None:
+        preprocess = getattr(
+            self.config,
+            "hailo_preprocess",
+            getattr(self.config, "hailo_preprocessor", "baked"),
+        )
+        if preprocess not in {"baked", "pytorch"}:
+            msg = f"Unknown hailo_preprocess={preprocess!r}, use 'baked' or 'pytorch'"
+            raise ValueError(msg)
+        self._uint8_input = preprocess == "baked"
 
-        # convert HWC (Height, Width, Channels) to CHW (Channels, Height, Width)
-        image = image.transpose(2, 0, 1)
+        self._hailo_session = HailoSession(
+            model_path, input_format="uint8" if self._uint8_input else "float32"
+        )
+        self._channels_last = self._hailo_session.channels_last
 
-        # convert to contiguous PyTorch tensor (Zero-copy, extremely fast)
-        tensor = torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32)
+        cfg = self.config
+        self._hailo_outputs = HailoOutputMapper(
+            {
+                "loc_row": (cfg.num_cell_row, cfg.num_row, cfg.num_lanes),
+                "exist_row": (2, cfg.num_row, cfg.num_lanes),
+                "loc_col": (cfg.num_cell_col, cfg.num_col, cfg.num_lanes),
+                "exist_col": (2, cfg.num_col, cfg.num_lanes),
+            },
+            output_names=getattr(cfg, "hailo_output_names", None),
+            log=self._log,
+        )
 
-        return tensor
+    def _log_startup_configuration(self) -> None:
+        model_path = Path(self.config.test_model)
+        parts = [
+            "[LaneDetectionAiModel]",
+            f"backend={self.backend}",
+            f"backbone={self.config.backbone}",
+            f"model={model_path}",
+            f"size_mb={model_path.stat().st_size / 2**20:.2f}",
+            f"input={'uint8' if self._uint8_input else 'float32 normalized'}",
+            f"decode_mode={self._decode_mode}",
+        ]
+        if self._hailo_session is not None:
+            parts.append(f"hef_input_shape={self._hailo_session.input_shape}")
+        self._log(" ".join(parts))
 
-    def predict(self, image: np.ndarray) -> List[np.ndarray]:
-        """
-        Predict the lanes in the image.
+    def close(self) -> None:
+        """Release the Hailo device (if used). The model can't be used afterwards."""
+        if self._hailo_session is not None:
+            self._hailo_session.close()
+            self._hailo_session = None
 
-        Arguments:
-            image -- The image.
+    def _preprocess(self, image: np.ndarray) -> np.ndarray:
+        """Resize, crop and convert the image to the network input.
 
         Returns:
-            List[np.ndarray] -- The lanes.
+            The input [1, 3, H, W] (or [1, H, W, 3] for channels-last Hailo
+            networks), uint8 RGB or float32 normalized RGB.
         """
-        with Timer(name="image_transform", filter_strength=40):
-            image = cv2.resize(
-                image,
-                (
-                    self.config.train_width,
-                    int(self.config.train_height / self.config.crop_ratio),
-                ),
+        cfg = self.config
+        image = cv2.resize(
+            image, (cfg.train_width, int(cfg.train_height / cfg.crop_ratio))
+        )
+        if image.ndim == 2:  # noqa: PLR2004
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        elif self._assume_bgr:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        # The network sees the bottom train_height rows
+        image = image[-cfg.train_height :]
+
+        if not self._uint8_input:
+            image = (image.astype(np.float32) / 255.0 - IMAGE_MEAN) / IMAGE_STD
+        if not self._channels_last:
+            image = image.transpose(2, 0, 1)
+        return np.ascontiguousarray(image[None])
+
+    def _infer(self, model_input: np.ndarray) -> dict[str, np.ndarray]:
+        """Run the network.
+
+        Returns:
+            The outputs "loc_row", "exist_row", "loc_col" and "exist_col".
+        """
+        if self._net is not None:
+            with torch.inference_mode():
+                pred = self._net(torch.from_numpy(model_input))
+            return {key: pred[key].numpy() for key in OUTPUT_KEYS}
+
+        if self._ort_session is not None:
+            outputs = self._ort_session.run(
+                self._ort_output_names, {self._ort_input_name: model_input}
             )
-            if image.shape[0] != 3:
-                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-            image = self.transform(image)
-            image = image[None, :, -self.config.train_height :, :]
+            return dict(zip(OUTPUT_KEYS, outputs, strict=True))
+
+        if self._hailo_session is not None and self._hailo_outputs is not None:
+            return self._hailo_outputs(self._hailo_session.infer(model_input))
+
+        msg = "The model has been closed"
+        raise RuntimeError(msg)
+
+    def predict(self, image: np.ndarray) -> list[np.ndarray | None]:
+        """Predict the lanes in the image.
+
+        Args:
+            image: Grayscale [H, W] or color [H, W, 3] image.
+
+        Returns:
+            Points [n, 2] (x, y in pixels of the given image) of every lane (left,
+            center, right), None if a lane wasn't found.
+        """
+        height, width = image.shape[:2]
+
+        with Timer(name="image_transform", filter_strength=40):
+            model_input = self._preprocess(image)
 
         with Timer(name="inference", filter_strength=40):
-            if self.config.test_model.endswith(".pth"):
-                with torch.inference_mode():
-                    pred = self.net(image)
-            elif self.config.test_model.endswith(".onnx"):
-                # Convert the image to a format suitable for ONNX
-                image = image.cpu().numpy()
-                pred = self.ort_session.run(None, {"input": image})
-                pred = {
-                    "loc_row": torch.from_numpy(pred[0]),
-                    "exist_row": torch.from_numpy(pred[1]),
-                    "loc_col": torch.from_numpy(pred[2]),
-                    "exist_col": torch.from_numpy(pred[3]),
-                }
+            pred = self._infer(model_input)
 
         with Timer(name="pred2coords", filter_strength=40):
-            coords = self.pred2coords_optimized(
+            row_lanes, col_lanes = decode_lanes(
                 pred,
                 self.config.row_anchor,
                 self.config.col_anchor,
-                original_image_width=self.camera_calibration.target_size[0],
-                original_image_height=self.camera_calibration.target_size[1],
+                width,
+                height,
+                refine=self._decode_mode == "softmax",
             )
-
-        if len(coords[0]) > 0 and len(coords[3]) > 0:
-            left_lane = np.vstack([coords[0], coords[3]])
-        elif len(coords[0]) == 0 and len(coords[3]) > 0:
-            left_lane = coords[3]
-        elif len(coords[0]) > 0 and len(coords[3]) == 0:
-            left_lane = coords[0]
-        else:
-            left_lane = None
-
-        if len(coords[1]) > 0 and len(coords[4]) > 0:
-            center_lane = np.vstack([coords[1], coords[4]])
-        elif len(coords[1]) == 0 and len(coords[4]) > 0:
-            center_lane = coords[4]
-        elif len(coords[1]) > 0 and len(coords[4]) == 0:
-            center_lane = coords[1]
-        else:
-            center_lane = None
-
-        if len(coords[2]) > 0 and len(coords[5]) > 0:
-            right_lane = np.vstack([coords[2], coords[5]])
-        elif len(coords[2]) == 0 and len(coords[5]) > 0:
-            right_lane = coords[5]
-        elif len(coords[2]) > 0 and len(coords[5]) == 0:
-            right_lane = coords[2]
-        else:
-            right_lane = None
-
-        return [left_lane, center_lane, right_lane]
-
-    @staticmethod
-    def pred2coords(
-        pred,
-        row_anchor,
-        col_anchor,
-        local_width=1,
-        original_image_width=1640,
-        original_image_height=590,
-    ):
-        """
-        Convert the prediction to coordinates.
-
-        Arguments:
-            pred -- Prediction.
-            row_anchor -- Row anchor.
-            col_anchor -- Column anchor.
-
-        Keyword Arguments:
-            local_width -- Local Width (default: {1})
-            original_image_width -- Original Image width (default: {1640})
-            original_image_height -- Original Image height (default: {590})
-
-        Returns:
-            List[np.ndarray] -- The coordinates.
-        """
-        batch_size, num_grid_row, num_cls_row, num_lane_row = pred["loc_row"].shape
-        batch_size, num_grid_col, num_cls_col, num_lane_col = pred["loc_col"].shape
-
-        max_indices_row = pred["loc_row"].argmax(1).cpu()
-        # n , num_cls, num_lanes
-        valid_row = pred["exist_row"].argmax(1).cpu()
-        # n, num_cls, num_lanes
-
-        max_indices_col = pred["loc_col"].argmax(1).cpu()
-        # n , num_cls, num_lanes
-        valid_col = pred["exist_col"].argmax(1).cpu()
-
-        # n, num_cls, num_lanes
-
-        pred["loc_row"] = pred["loc_row"].cpu()
-        pred["loc_col"] = pred["loc_col"].cpu()
-
-        coords = []
-
-        row_lane_idx = [0, 1, 2]
-        col_lane_idx = [0, 1, 2]
-
-        for i in row_lane_idx:
-            tmp = []
-            for k in range(valid_row.shape[1]):
-                if valid_row[0, k, i]:
-                    all_ind = torch.tensor(
-                        list(
-                            range(
-                                max(0, max_indices_row[0, k, i] - local_width),
-                                min(
-                                    num_grid_row - 1,
-                                    max_indices_row[0, k, i] + local_width,
-                                )
-                                + 1,
-                            )
-                        )
-                    )
-
-                    out_tmp = (
-                        pred["loc_row"][0, all_ind, k, i].softmax(0) * all_ind.float()
-                    ).sum() + 0.5
-                    out_tmp = out_tmp / (num_grid_row - 1) * original_image_width
-                    tmp.append(
-                        (int(out_tmp), int(row_anchor[k] * original_image_height))
-                    )
-            coords.append(tmp)
-
-        for i in col_lane_idx:
-            tmp = []
-            for k in range(valid_col.shape[1]):
-                if valid_col[0, k, i]:
-                    all_ind = torch.tensor(
-                        list(
-                            range(
-                                max(0, max_indices_col[0, k, i] - local_width),
-                                min(
-                                    num_grid_col - 1,
-                                    max_indices_col[0, k, i] + local_width,
-                                )
-                                + 1,
-                            )
-                        )
-                    )
-
-                    out_tmp = (
-                        pred["loc_col"][0, all_ind, k, i].softmax(0) * all_ind.float()
-                    ).sum() + 0.5
-
-                    out_tmp = out_tmp / (num_grid_col - 1) * original_image_height
-                    tmp.append(
-                        (int(col_anchor[k] * original_image_width), int(out_tmp))
-                    )
-            coords.append(tmp)
-
-        return coords
-
-    @staticmethod
-    def pred2coords_optimized(
-        pred: dict[str, torch.Tensor],
-        row_anchor: np.ndarray,
-        col_anchor: np.ndarray,
-        local_width: int = 1,
-        original_image_width: int = 1640,
-        original_image_height: int = 590,
-    ) -> List[List[tuple[int, int]]]:
-        """
-        Convert the prediction to coordinates (Optimized Version).
-
-        Arguments:
-            pred -- Prediction dictionary containing tensors ('loc_row', 'exist_row', 'loc_col', 'exist_col').
-                    Assumes tensors are on the appropriate device (CPU or GPU).
-            row_anchor -- Row anchor positions (normalized 0-1 or similar). NumPy array.
-            col_anchor -- Column anchor positions (normalized 0-1 or similar). NumPy array.
-
-        Keyword Arguments:
-            local_width -- Local width for averaging (default: {1})
-            original_image_width -- Original Image width (default: {1640})
-            original_image_height -- Original Image height (default: {590})
-
-        Returns:
-            List[List[Tuple[int, int]]] -- The coordinates for each lane.
-                                           Structure: [[(x,y), ...], [(x,y), ...], ...]
-        """
-        loc_row_tensor = pred["loc_row"]
-        loc_col_tensor = pred["loc_col"]
-        device = loc_row_tensor.device
-
-        batch_size, num_grid_row, num_cls_row, num_lane_row = loc_row_tensor.shape
-        batch_size, num_grid_col, num_cls_col, num_lane_col = loc_col_tensor.shape
-
-        max_indices_row = loc_row_tensor[0].argmax(
-            0
-        )  # Shape: [num_cls_row, num_lane_row]
-        valid_row = pred["exist_row"][0].argmax(0)  # Shape: [num_cls_row, num_lane_row]
-        max_indices_col = loc_col_tensor[0].argmax(
-            0
-        )  # Shape: [num_cls_col, num_lane_col]
-        valid_col = pred["exist_col"][0].argmax(0)  # Shape: [num_cls_col, num_lane_col]
-
-        row_scale = (
-            original_image_width / (num_grid_row - 1)
-            if num_grid_row > 1
-            else original_image_width
-        )
-        col_scale = (
-            original_image_height / (num_grid_col - 1)
-            if num_grid_col > 1
-            else original_image_height
-        )
-
-        coords = []
-        row_anchor_coords = (
-            torch.from_numpy(row_anchor).float() * original_image_height
-        ).int()
-        col_anchor_coords = (
-            torch.from_numpy(col_anchor).float() * original_image_width
-        ).int()
-
-        # Row Processing
-        for i in range(num_lane_row):
-            tmp = []
-            valid_k_indices = torch.where(valid_row[:, i].cpu())[0]
-
-            for k in valid_k_indices:
-                max_idx = max_indices_row[k, i].item()
-
-                start = max(0, max_idx - local_width)
-                end = min(num_grid_row - 1, max_idx + local_width)
-
-                all_ind = torch.arange(
-                    start, end + 1, device=device, dtype=torch.float32
-                )
-                locs = loc_row_tensor[0, start : end + 1, k, i]
-
-                # Softmax and weighted sum
-                probs = locs.softmax(0)
-                out_tmp = torch.sum(probs * all_ind) + 0.5
-
-                # Scale to image coordinates and get y-coordinate from anchor
-                x_coord_tensor = out_tmp * row_scale
-                y_coord = row_anchor_coords[k].item()
-
-                tmp.append((x_coord_tensor.round().int().item(), y_coord))
-            coords.append(tmp)
-
-        # Column Processing
-        for i in range(num_lane_col):
-            tmp = []
-            valid_k_indices = torch.where(valid_col[:, i].cpu())[0]
-
-            for k in valid_k_indices:
-                max_idx = max_indices_col[k, i].item()
-
-                start = max(0, max_idx - local_width)
-                end = min(num_grid_col - 1, max_idx + local_width)
-
-                all_ind = torch.arange(
-                    start, end + 1, device=device, dtype=torch.float32
-                )
-                locs = loc_col_tensor[0, start : end + 1, k, i]
-
-                # Softmax and weighted sum
-                probs = locs.softmax(0)
-                out_tmp = torch.sum(probs * all_ind) + 0.5
-
-                # Scale to image coordinates and get x-coordinate from anchor
-                y_coord_tensor = out_tmp * col_scale
-                x_coord = col_anchor_coords[k].item()
-
-                tmp.append((x_coord, y_coord_tensor.round().int().item()))
-            coords.append(tmp)
-
-        return coords
+            return merge_lanes(row_lanes, col_lanes)

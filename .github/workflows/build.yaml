@@ -1,0 +1,17 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - jazzy*
+  pull_request:
+    branches:
+      - jazzy*
+  workflow_dispatch:
+
+jobs:
+  call-build:
+    uses: DHBW-Smart-Rollerz/smarty_workspace/.github/workflows/build-reusable.yaml@jazzy
+    with:
+      type: 'python'
+      package_name: 'lane_detection_ai'

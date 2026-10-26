@@ -1,17 +1,19 @@
 repos:
-  - repo: https://github.com/psf/black
-    rev: 23.1.0  # Use the latest version
+  # Python: linter (incl. import sorting and docstrings) and formatter, configured in ruff.toml
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1  # update with `pre-commit autoupdate`
     hooks:
-      - id: black
+      # Pass the workspace config explicitly like the Lint CI does. Ruff then resolves
+      # the first-party packages relative to the repository (not the workspace), so
+      # imports of the own package are sorted the same way locally and in CI.
+      - id: ruff-check
         args:
-          - --line-length=88
+          - --fix
+          - --config=../../ruff.toml
+      - id: ruff-format
+        args:
+          - --config=../../ruff.toml
 
-  - repo: https://github.com/pre-commit/mirrors-isort
-    rev: v5.10.1  # Use the latest version
-    hooks:
-      - id: isort
-        args:
-          - --profile=black
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.1.0  # this is optional, use `pre-commit autoupdate` to get the latest rev!
     hooks:
@@ -29,15 +31,9 @@ repos:
         args:
           - --autofix
 
-  - repo: https://github.com/pycqa/pydocstyle
-    rev: 4.0.0  # pick a git hash / tag to point to
-    hooks:
-    - id: pydocstyle
-      args:
-      - --ignore=D401,D417,D100,D407,D406,D413,D212,D203,D104,D205
-
+  # C++: formatter (ROS 2 code style)
   - repo: https://github.com/DHBW-Smart-Rollerz/smarty_hooks
-    rev: v0.1.1
+    rev: v0.1.2
     hooks:
       - id: ament_uncrustify
 

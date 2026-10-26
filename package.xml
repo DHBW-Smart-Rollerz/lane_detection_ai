@@ -3,12 +3,17 @@
 <package format="3">
   <name>lane_detection_ai</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>AI lane detection based on Ultra Fast Lane Detection v2</description>
   <maintainer email="info@dhbw-smartrollerz.org">Smart Rollerz</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
 
   <depend>rclpy</depend>
   <depend>cv_bridge</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>camera_preprocessing</depend>
+  <depend>lane_msgs</depend>
   <depend>timing</depend>
   <depend>setup_utils</depend>
   <depend>smarty_utils</depend>
