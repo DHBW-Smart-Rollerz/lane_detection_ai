@@ -5,18 +5,21 @@ import lane_msgs.msg
 import numpy as np
 import rclpy
 import sensor_msgs.msg
-import std_msgs
 import std_msgs.msg
 from camera_preprocessing.transformation import (
     birds_eyed_view,
     coordinate_transform,
     distortion,
 )
+from rclpy.executors import ExternalShutdownException
 from smarty_utils.enums import NodeState
 from smarty_utils.smarty_node import SmartyNode
 from timing import timer
 
 from lane_detection_ai.model import model_wrapper as model
+
+# Trajectory points with a smaller bird's eye view coordinate are not drawn
+TRAJECTORY_MIN_BEV_COORD = 750
 
 
 class LaneDetectionNode(SmartyNode):
@@ -64,11 +67,16 @@ class LaneDetectionNode(SmartyNode):
             self.coord_transform._calib, self.distortion
         )
 
-        self.model = model.LaneDetectionAiModel(
-            base_path=self.package_path, model_config_path=self.model_config_path
-        )
+        self.model = self._create_model()
 
         self.get_logger().info("LaneDetectionNode initialized")
+
+    def _create_model(self) -> model.LaneDetectionAiModel:
+        return model.LaneDetectionAiModel(
+            base_path=self.package_path,
+            model_config_path=self.model_config_path,
+            log=self.get_logger().info,
+        )
 
     @property
     def model_config_path(self) -> str:
@@ -80,14 +88,18 @@ class LaneDetectionNode(SmartyNode):
         """Return the desired OpenCV encoding for CvBridge."""
         return self.get_parameter("image_encoding").value
 
-    def _reset(self):
+    def _reset(self) -> None:
         """Reset the node to its initial state."""
-        del self.model
-        self.model = model.LaneDetectionAiModel(
-            base_path=self.package_path, model_config_path=self.model_config_path
-        )
+        # Release the Hailo device before the new model opens it again
+        self.model.close()
+        self.model = self._create_model()
 
-    def image_callback(self, msg: sensor_msgs.msg.Image):
+    def destroy_node(self) -> None:
+        """Release the model and destroy the node."""
+        self.model.close()
+        super().destroy_node()
+
+    def image_callback(self, msg: sensor_msgs.msg.Image) -> None:
         """Executed by the ROS2 system whenever a new image is received."""
         if not self.active:
             self.get_logger().info("🚫 Node is not active. Ignoring image callback.")
@@ -102,15 +114,15 @@ class LaneDetectionNode(SmartyNode):
         try:
             self.execute_prediction(msg)
         except Exception as e:
-            self.get_logger().info(e)
+            # Keep the node alive, the next image may be processed successfully
+            self.get_logger().error(f"Lane detection failed: {e!r}")
 
     @timer.Timer(name="total", filter_strength=40)
-    def execute_prediction(self, msg: sensor_msgs.msg.Image):
-        """
-        Execute the prediction.
+    def execute_prediction(self, msg: sensor_msgs.msg.Image) -> None:
+        """Execute the prediction.
 
-        Arguments:
-            msg -- The image message.
+        Args:
+            msg: The image message.
         """
         with timer.Timer(name="msg_transport", filter_strength=40):
             # The image has to be retrieved from the message
@@ -222,8 +234,10 @@ class LaneDetectionNode(SmartyNode):
 
         if self._debug:
             with timer.Timer(name="debug_image", filter_strength=40):
-                debug_image = image.copy()
-                debug_image = cv2.cvtColor(debug_image, cv2.COLOR_GRAY2RGB)
+                if image.ndim == 2:  # noqa: PLR2004
+                    debug_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+                else:
+                    debug_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
                 if len(left_lane) > 0:
                     for coord in self.coord_transform.world_to_bird(left_lane).astype(
@@ -254,8 +268,7 @@ class LaneDetectionNode(SmartyNode):
     def _draw_trajectory(
         self, img: np.ndarray, driving_lane_coeff: np.ndarray
     ) -> np.ndarray:
-        """
-        Draws the trajectory on the given image.
+        """Draws the trajectory on the given image.
 
         Args:
             img (np.ndarray): Image to draw the trajectory on.
@@ -279,7 +292,7 @@ class LaneDetectionNode(SmartyNode):
             fitted_lane_points_world
         )
         fitted_lane_points_bev = fitted_lane_points_bev[
-            (fitted_lane_points_bev >= 750).all(axis=1)
+            (fitted_lane_points_bev >= TRAJECTORY_MIN_BEV_COORD).all(axis=1)
         ]
 
         for coord in fitted_lane_points_bev.astype(int):
@@ -288,12 +301,11 @@ class LaneDetectionNode(SmartyNode):
         return img
 
 
-def main(args=None):
-    """
-    Main function to start the LaneDetectionNode.
+def main(args: list[str] | None = None) -> None:
+    """Start the LaneDetectionNode.
 
-    Keyword Arguments:
-        args -- Launch arguments (default: {None})
+    Args:
+        args: Command line arguments for rclpy (default: sys.argv).
     """
     rclpy.init(args=args)
     node = LaneDetectionNode()
@@ -317,7 +329,8 @@ def main(args=None):
         else:
             rclpy.spin(node)
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl+C or SIGTERM (e.g. stopped by ros2 launch)
         pass
 
     finally:
