@@ -1,6 +1,11 @@
 ## Preface
 
-This is a quick guide to setting up Hailo 8 Accelerator and needed software packages. This guide has been tested on Python version `3.10`. Although higher versions might work in the future, currently version `3.10` is the highest available version that ensures correct installation of all software packages. Consider this when downloading wheel files on the Download platform of Hailo.
+This is a quick guide to setting up Hailo 8 Accelerator and needed software packages. Two different Python environments are involved:
+
+- **Dataflow Compiler (DFC)** (Step 2, only needed to compile models): tested with Python `3.10`, the highest version that ensures a correct installation of all its packages. Use a separate virtual environment for it.
+- **PyHailoRT** (Step 4, needed to run the node): must match the Python version of the ROS 2 node, i.e. Python `3.12` (`cp312` wheel) for ROS 2 Jazzy. The `cp312` wheels of HailoRT 4.23.0 are in the `resource/` directory.
+
+Consider this when downloading wheel files on the Download platform of Hailo.
 ## Prerequisites
 
 Before you start setting up Hailo tools for using AI Accelerator power, you of course need the accelerator itself. It will most likely be in a m.2 NVMe format.
@@ -30,7 +35,7 @@ sudo apt install python3.<version>-dev
 ```
 ## Step 2: Install Dataflow Compiler
 
-The Dataflow Compiler is needed for model conversion and compilation to Hailo binary format. In order to install it, follow <a href="https://hailo.ai/developer-zone/documentation/dataflow-compiler-v3-33-0/?sp_referrer=install/install.html">this installation guide</a>. 
+The Dataflow Compiler is needed for model conversion and compilation to Hailo binary format. In order to install it, follow <a href="https://hailo.ai/developer-zone/documentation/dataflow-compiler-v3-33-0/?sp_referrer=install/install.html">this installation guide</a>.
 
 > Virtual Environments
 > To install the dataflow compiler python wheel, it is highly recommended to create a virtual environment with the supported python version from the downloads <a href="https://hailo.ai/developer-zone/software-downloads/?product=ai_accelerators&device=hailo_8_8l">here</a>. From here on, always make sure that you have the created environment activated when installing wheels and packages in further steps.
@@ -41,7 +46,7 @@ Before you install the packages, ensure that `Secure Boot` is disabled. In order
 Then simply download the packages `hailort_<version>_amd64.deb` and `hailort-pcie-driver_<version>_all.deb` from <a href="https://hailo.ai/developer-zone/software-downloads/?product=ai_accelerators&device=hailo_8_8l">here</a>, make sure that you select the right platform. After downloading the `.deb` files, execute this:
 
 ```bash
-sudo dpkg --install hailort_4.23.0_$(dpkg --printarchitecture).deb hailort-pcie-driver_4.23.0_all.deb
+sudo dpkg --install hailort_4.23.0_$(dpkg --print-architecture).deb hailort-pcie-driver_4.23.0_all.deb
 ```
 
 Then reboot your systems in order for the installation to take effect.
@@ -50,10 +55,10 @@ Then reboot your systems in order for the installation to take effect.
 
 PyHailoRT is a python package which wraps the C/C++ API that is called from your applications. It allows you to load models, send and receive data from the model.
 
-To run your models on Hailo device, you need to install the modules from the `hailort-<version>-<python_tag>-<abi_tag>-<platform_tag>` file (download from <a href="https://hailo.ai/developer-zone/software-downloads/?product=ai_accelerators&device=hailo_8_8l">here</a>). Then execute this:
+To run your models on Hailo device, you need to install the modules from the `hailort-<version>-<python_tag>-<abi_tag>-<platform_tag>` file (download from <a href="https://hailo.ai/developer-zone/software-downloads/?product=ai_accelerators&device=hailo_8_8l">here</a>, the version must match the installed HailoRT). Install it with the Python interpreter of the node (`PYTHON_EXECUTABLE`), e.g. with the wheel from `resource/`:
 
 ```bash
-pip install ./hailort-<version>-<python_tag>-<abi_tag>-<platform_tag>.whl
+"$PYTHON_EXECUTABLE" -m pip install resource/hailort-4.23.0-cp312-cp312-linux_$(uname -m).whl
 ```
 
 ## Test the Accelerator

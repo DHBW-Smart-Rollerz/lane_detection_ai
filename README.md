@@ -1,6 +1,8 @@
 # Lane Detection AI
 
-[![Build Test](https://github.com/DHBW-Smart-Rollerz/ros2_exaple_package/actions/workflows/build-test.yaml/badge.svg)](https://github.com/DHBW-Smart-Rollerz/ros2_exaple_package/actions/workflows/build-test.yaml)
+[![Build](https://github.com/DHBW-Smart-Rollerz/lane_detection_ai/actions/workflows/build.yaml/badge.svg)](https://github.com/DHBW-Smart-Rollerz/lane_detection_ai/actions/workflows/build.yaml)
+[![Lint](https://github.com/DHBW-Smart-Rollerz/lane_detection_ai/actions/workflows/lint.yaml/badge.svg)](https://github.com/DHBW-Smart-Rollerz/lane_detection_ai/actions/workflows/lint.yaml)
+[![Test](https://github.com/DHBW-Smart-Rollerz/lane_detection_ai/actions/workflows/test.yaml/badge.svg)](https://github.com/DHBW-Smart-Rollerz/lane_detection_ai/actions/workflows/test.yaml)
 
 This repository contains the ros2 jazzy package for the ai lane detection based on the [ultra fast lane detection v2](https://github.com/cfzd/Ultra-Fast-Lane-Detection-v2).
 
@@ -25,7 +27,7 @@ This repository contains the ros2 jazzy package for the ai lane detection based 
 
 For a detailed installation guide, see [HAILO_INSTALL.md](HAILO_INSTALL.md).
 
-If your model config enables the Hailo backend, this node imports `hailo_platform` (HailoRT Python bindings). Those bindings **must be installed for the exact Python interpreter that executes the ROS2 entrypoint script**.
+If the model config uses a `.hef` model (Hailo backend), this node imports `hailo_platform` (HailoRT Python bindings). Those bindings **must be installed for the exact Python interpreter that executes the ROS2 entrypoint script**.
 
 Install the HailoRT wheel **matching that Python version** (for Jazzy this is typically CPython 3.12, so you need a `cp312` wheel). Example:
 
@@ -41,10 +43,40 @@ Notes:
 
 ## Usage
 
-To run this package, you will need the pre-trained model weights. As of September 2024, two versions are available: a dense model and a sparse model. You can download them [here](https://it-nas.dhbw-stuttgart.de:5001/?launchApp=SYNO.SDS.Drive.Application#file_id=842460996588058121). Place the downloaded model in the `models/` folder, and the corresponding configuration file in the `config/` folder.
+To run this package, you will need the pre-trained model weights. You can download them [here](https://it-nas.dhbw-stuttgart.de:5001/?launchApp=SYNO.SDS.Drive.Application#file_id=842460996588058121). Place the downloaded model in the `models/` folder, and the corresponding configuration file in the `config/` folder.
 
 **Important:**
-Ensure that you update the `model_config_path` in the `config/ros_params.yaml` file, and set the correct path for the model in the configuration file's `test_model` field.
+Ensure that you update the `model_config_path` in the `config/ros_params.yaml` file, and set the correct path for the model in the configuration file's `test_model` field (relative to the package).
+
+### Backends
+
+The backend is selected by the file extension of `test_model`:
+
+| Extension | Backend | Notes |
+|---|---|---|
+| `.pth` | PyTorch (CPU) | Convert training checkpoints (`.ckpt`) with `scripts/convert_ckpt_to_pth.py` first |
+| `.onnx` | ONNX Runtime (CPU) | Models with float32 input (normalized) and uint8 input (exported with `scripts/convert_pth_onnx.py`) are supported |
+| `.hef` | Hailo-8 (HailoRT) | Compiled with `scripts/compile_onnx_hef.sh`, requires HailoRT (see below) |
+
+Optional keys of the model config:
+
+| Key | Default | Description |
+|---|---|---|
+| `mlp_mid_dim` | `2048` | Hidden size of the classification MLP. Set `512` for older models (`.pth` only) |
+| `decode_mode` | `"softmax"` | `"softmax"` (sub-cell precision) or `"argmax"` (faster). The old key `hailo_decode_mode` is also read |
+| `assume_bgr` | `False` | Convert color images from BGR to RGB (if `image_encoding` is `bgr8`). The old key `hailo_assume_bgr` is also read |
+| `hailo_preprocess` | `"baked"` | `"baked"`: the HEF contains the normalization and gets the uint8 RGB image (what `convert_pth_onnx.py` exports). `"pytorch"`: the image is normalized on the host. The old key `hailo_preprocessor` is also read |
+| `hailo_output_names` | - | Dict from `loc_row`, `exist_row`, `loc_col`, `exist_col` to the HEF output names. Only needed if the outputs can't be matched automatically (a warning is logged at startup) |
+
+### ROS parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `model_config_path` | `config/model_sparse_config.py` | Model config, relative to the package |
+| `image_encoding` | `8UC1` | Encoding of the subscribed images for CvBridge, e.g. `8UC1` (grayscale) or `bgr8` |
+| `image_subscriber` | `/camera/undistorted` | Input image topic |
+| `result_publisher` | `/lane_detection/result` | Detected lanes |
+| `debug` | `False` | Publish a debug image on `debug_image_publisher` |
 
 ### Running the Node
 
@@ -61,58 +93,64 @@ ros2 launch lane_detection_ai lane_detection_ai.launch.py debug:=true
 
 ## Scripts
 
-The `scripts/` directory contains SLURM job scripts used to prepare calibration data and compile the model for Hailo hardware on a SLURM-managed HPC cluster. All three scripts use [Pyxis](https://github.com/NVIDIA/pyxis) (`--container-image`) to run inside a pre-built Enroot container.
+### Model conversion and benchmark
+
+| Script | Purpose |
+|---|---|
+| `convert_ckpt_to_pth.py` | Extract the weights of a training checkpoint: `python3 scripts/convert_ckpt_to_pth.py models/model.ckpt models/model.pth` |
+| `convert_pth_onnx.py` | Export a `.pth` model to ONNX with uint8 RGB input (normalization in the graph): `python3 scripts/convert_pth_onnx.py --base-path . --model-config config/model.py --pth models/model.pth --onnx-out build/model.onnx` |
+| `compile_onnx_hef.sh` | Compile the ONNX model to a HEF with the Hailo Dataflow Compiler (DFC), see `./scripts/compile_onnx_hef.sh --help`. Set `CROP_RATIO` to the `crop_ratio` of the model config, so the calibration images are preprocessed like in the node |
+| `benchmark_models.py` | Launch the node with several model configs and compare the `total` and `inference` times: `python3 scripts/benchmark_models.py config/a.py config/b.py --output results.json`. Needs images on the input topic (camera or rosbag) |
+
+### SLURM jobs
+
+The `*.slurm` scripts prepare calibration data and compile the model for Hailo hardware on a SLURM-managed HPC cluster. They use [Pyxis](https://github.com/NVIDIA/pyxis) (`--container-image`) to run inside a pre-built Enroot container.
+
+Submit them from the repository root and create the log directory first (`mkdir -p slurm-outs`). All paths default to the layout below and can be overridden with `sbatch --export=ALL,KEY=VALUE,... scripts/<job>.slurm`:
+
+```
+<parent>/
+├── containers/lane_detection_ai_run.sqsh                       # CONTAINER_IMAGE
+├── lane_detection_ai/                                           # PROJECT_ROOT (this repo)
+│   └── hailo/opt_samples/                                       # calibration images
+└── lane_detection_ai_training/dataset/smartrollerz_bev/data/rosbags   # SRC_ROOT
+```
 
 ---
 
 ### `import_calib_images.slurm`
 
-**Purpose:** Copies BEV (bird's-eye-view) images from a ROS bag dataset directory into the calibration samples folder and resizes them to the model's expected input resolution.
+**Purpose:** Copies BEV (bird's-eye-view) images from a ROS bag dataset directory into the calibration samples folder and resizes them.
 
-**When to use:** Run this once before compiling a new HEF to populate `hailo/opt_samples/` with correctly sized calibration images.
-
-**Key parameters** (set via `sbatch --export=KEY=VALUE` or by editing the script):
+**When to use:** Run this once before compiling a new HEF to populate `hailo/opt_samples/` with calibration images.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SRC_ROOT` | `.../dataset/smartrollerz_bev/data/rosbags` | Source directory containing the raw dataset |
-| `DST_ROOT` | `.../hailo/opt_samples` | Destination for calibration images |
+| `SRC_ROOT` | `<parent>/lane_detection_ai_training/dataset/smartrollerz_bev/data/rosbags` | Source directory containing the raw dataset |
+| `DST_ROOT` | `${PROJECT_ROOT}/hailo/opt_samples` | Destination for calibration images |
 | `TARGET_WIDTH` | `512` | Target image width in pixels |
 | `TARGET_HEIGHT` | `384` | Target image height in pixels |
 
-**Usage:**
 ```bash
-# Default settings
 sbatch scripts/import_calib_images.slurm
-
-# Override resolution
-sbatch --export=TARGET_WIDTH=640,TARGET_HEIGHT=480 scripts/import_calib_images.slurm
+sbatch --export=ALL,TARGET_WIDTH=640,TARGET_HEIGHT=480 scripts/import_calib_images.slurm
 ```
 
 The script selects only files with `_bev` in their name and resizes them in-place using OpenCV.
 
 ---
 
-### `flatten_opt_samples.slurm`
+### `flatten_opt_samples.slurm` (optional)
 
-**Purpose:** Flattens a nested directory structure inside `hailo/opt_samples/` by moving all image files from subdirectories into the root of that folder and deleting the now-empty subdirectories. This is required because the Hailo DFC calibration tool expects all images in a single flat directory.
-
-**When to use:** Run this after `import_calib_images.slurm` if the copied images ended up in subdirectories (e.g. organised by rosbag session).
-
-**Key parameters:**
+**Purpose:** Moves all images from subdirectories of `hailo/opt_samples/` into its root and deletes the empty subdirectories. `compile_onnx_hef.sh` searches the calibration directory recursively, so this is only needed for other tools that expect a flat directory.
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPT_SAMPLES_ROOT` | `.../hailo/opt_samples` | Directory to flatten |
+| `OPT_SAMPLES_ROOT` | `${PROJECT_ROOT}/hailo/opt_samples` | Directory to flatten |
 | `DRY_RUN` | `0` | Set to `1` to preview moves without touching any files |
 
-**Usage:**
 ```bash
-# Preview what would be moved (dry run)
-sbatch --export=DRY_RUN=1 scripts/flatten_opt_samples.slurm
-
-# Actually flatten
-sbatch scripts/flatten_opt_samples.slurm
+sbatch --export=ALL,DRY_RUN=1 scripts/flatten_opt_samples.slurm
 ```
 
 Name collisions are resolved automatically by appending a numeric suffix (e.g. `image_0001.jpg`). Non-image files are left in place and reported as skipped.
@@ -121,53 +159,41 @@ Name collisions are resolved automatically by appending a numeric suffix (e.g. `
 
 ### `compile_pth_to_hef.slurm`
 
-**Purpose:** End-to-end pipeline that converts a PyTorch `.pth` model checkpoint into a Hailo HEF file ready for deployment on Hailo-8 hardware. It performs two steps in sequence:
+**Purpose:** Converts a PyTorch `.pth` model into a Hailo HEF file:
 
-1. **PTH → ONNX** – calls `scripts/convert_pth_onnx.py` to export the model to ONNX format.
-2. **ONNX → HEF** – calls `scripts/compile_onnx_hef.sh`, which uses the Hailo Dataflow Compiler (DFC) to parse, optimise (using the calibration images), and compile the ONNX model into a `.hef` file.
+1. **PTH → ONNX** with `scripts/convert_pth_onnx.py`.
+2. **ONNX → HEF** with `scripts/compile_onnx_hef.sh` (parse, optimize with the calibration images, compile).
 
-The script automatically installs Miniconda and all required DFC dependencies inside the job if they are not already present, so no manual environment setup on the cluster is needed.
-
-**When to use:** Run this after training a new model and after calibration images are ready in `hailo/opt_samples/`.
-
-**Key parameters:**
+The script installs Miniconda and the DFC dependencies inside the job if they are not already present.
 
 | Variable | Default | Description |
 |---|---|---|
-| `MODEL_CONFIG` | `config/21.04.2026_config.py` | Path to the model config file |
-| `PTH_PATH` | `models/21.04.2026.pth` | Path to the trained PyTorch checkpoint |
-| `CALIB_DIR` | `.../hailo/opt_samples` | Directory of calibration images |
-| `OUT_DIR` | `.../hailo/build/21.04.2026/` | Output directory for ONNX and HEF files |
-| `ONNX_OUT` | `${OUT_DIR}/lane_detection_ai.onnx` | Path for the intermediate ONNX export |
-| `HAILO_WHEELS_DIR` | `${PROJECT_ROOT}/hailo/dfc_wheels` | Directory containing Hailo DFC `.whl` files |
+| `MODEL_CONFIG` | required | Model config, relative to the repository |
+| `PTH_PATH` | required | Trained checkpoint, relative to the repository |
+| `CALIB_DIR` | `${PROJECT_ROOT}/hailo/opt_samples` | Directory of calibration images |
+| `OUT_DIR` | `${PROJECT_ROOT}/hailo/build/<pth name>` | Output directory for ONNX and HEF files |
+| `HAILO_WHEELS_DIR` | `${PROJECT_ROOT}/hailo/dfc_wheels` | Directory containing the Hailo DFC `.whl` files |
+| `CROP_RATIO` | `1.0` | `crop_ratio` of the model config |
+| `OPT_LEVEL` | `default` | Compiler optimization level (`default` or `max`) |
 | `HW_ARCH` | `hailo8` | Target Hailo hardware architecture |
-| `CALIB_SAMPLES` | `1024` | Number of calibration samples used during optimisation |
+| `CALIB_SAMPLES` | `1024` | Number of calibration samples used during optimization |
 
-**Requirements:** The Hailo Dataflow Compiler wheels (`hailo_dataflow_compiler-*.whl` or `hailo_sdk_client-*.whl`) must be present in `HAILO_WHEELS_DIR` before submission. These are not on PyPI; obtain them from the [Hailo Developer Portal](https://developer.hailo.ai/portal/en/downloads/hailort/) or the `/resource` directory.
+**Requirements:** The Hailo Dataflow Compiler wheels (`hailo_dataflow_compiler-*.whl` or `hailo_sdk_client-*.whl`) must be present in `HAILO_WHEELS_DIR`. These are not on PyPI; obtain them from the [Hailo Developer Portal](https://developer.hailo.ai/portal/en/downloads/hailort/).
 
-**Usage:**
 ```bash
-# Default (uses paths hard-coded in the script)
-sbatch scripts/compile_pth_to_hef.slurm
-
-# Custom model and output directory
-sbatch --export=MODEL_CONFIG=config/my_config.py,PTH_PATH=models/my_model.pth,OUT_DIR=/raid/.../hailo/build/my_model/ \
+sbatch --export=ALL,MODEL_CONFIG=config/my_config.py,PTH_PATH=models/my_model.pth,CROP_RATIO=0.8 \
   scripts/compile_pth_to_hef.slurm
 ```
 
-The final HEF file is written to `OUT_DIR`. Copy it to `models/` and update `config/ros_params.yaml` to use it with the ROS node.
+Copy the HEF from `OUT_DIR` to `models/` and set it as `test_model` in the model config.
 
 ---
 
 ### Typical workflow
 
 ```
-import_calib_images  →  flatten_opt_samples  →  compile_pth_to_hef
+import_calib_images  →  compile_pth_to_hef
 ```
-
-1. `import_calib_images.slurm` – populate calibration images from the dataset.
-2. `flatten_opt_samples.slurm` – flatten into a single directory if needed.
-3. `compile_pth_to_hef.slurm` – compile the trained model to a `.hef` for Hailo deployment.
 
 
 ## Structure
@@ -176,7 +202,7 @@ import_calib_images  →  flatten_opt_samples  →  compile_pth_to_hef
 - `launch/`: Contains the launch files
 - `models/`: Contains the models
 - `resource/`: Contains the package name (required to build with colcon)
-- `scripts/`: Contains SLURM job scripts for model compilation and data preparation
+- `scripts/`: Contains model conversion/benchmark scripts and SLURM jobs for the Hailo compilation
 - `lane_detection_ai/`: Contains all nodes and sources for the ros package
 - `lane_detection_ai/model/`: Contains all sources of the ufldv2 model
 - `test/`: Contains the tests
