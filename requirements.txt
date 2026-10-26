@@ -1,6 +1,9 @@
 addict
+# numpy 1.x for cv_bridge of ROS 2 Jazzy, the versions below are the last ones that
+# support it (scipy is used by camera_preprocessing)
 numpy<2.0.0
-opencv_python
+opencv_python<4.12
+scipy<1.18
 pytest
 torch
 torchvision
