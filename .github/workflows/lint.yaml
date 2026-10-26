@@ -1,0 +1,14 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - jazzy*
+  pull_request:
+    branches:
+      - jazzy*
+  workflow_dispatch:
+
+jobs:
+  call-lint:
+    uses: DHBW-Smart-Rollerz/smarty_workspace/.github/workflows/lint-reusable.yaml@jazzy
