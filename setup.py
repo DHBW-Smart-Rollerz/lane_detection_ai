@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 from setup_utils import include_directory
 from setuptools import find_packages, setup
@@ -13,15 +13,15 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         *include_directory(
-            install_path=os.path.join("share", package_name, "config"),
+            install_path=str(Path("share") / package_name / "config"),
             source_path="config",
         ),
         *include_directory(
-            install_path=os.path.join("share", package_name, "launch"),
+            install_path=str(Path("share") / package_name / "launch"),
             source_path="launch",
         ),
         *include_directory(
-            install_path=os.path.join("share", package_name, "models"),
+            install_path=str(Path("share") / package_name / "models"),
             source_path="models",
         ),
     ],
@@ -29,9 +29,9 @@ setup(
     zip_safe=True,
     maintainer="Smart Rollerz",
     maintainer_email="info@dhbw-smartrollerz.org",
-    description="TODO: Package description",
-    license="TODO: License declaration",
-    tests_require=["pytest"],
+    description="AI lane detection based on Ultra Fast Lane Detection v2",
+    license="MIT",
+    extras_require={"test": ["pytest"]},
     entry_points={
         "console_scripts": [
             f"lane_detection_ai_node = {package_name}.lane_detection_ai_node:main",

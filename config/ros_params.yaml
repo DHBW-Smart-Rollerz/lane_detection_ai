@@ -4,6 +4,10 @@ lane_detection_ai_node:
     # Path of the model config
     model_config_path: "config/model_onnx_bev_config.py"
 
+    # CvBridge desired encoding.
+    # Use "8UC1" for grayscale, or "bgr8" for color (recommended if model trained on RGB/BGR).
+    image_encoding: "8UC1"
+
     # Topics for an example publisher and subscriber
     image_subscriber: "/camera/image/bev"
     result_publisher: "/lane_detection/lane"

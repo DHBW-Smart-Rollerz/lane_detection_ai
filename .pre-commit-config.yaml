@@ -1,27 +1,33 @@
 repos:
   # Python: linter (incl. import sorting and docstrings) and formatter, configured in ruff.toml
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.1 # update with `pre-commit autoupdate`
+    rev: v0.17.1  # update with `pre-commit autoupdate`
     hooks:
+      # Pass the workspace config explicitly like the Lint CI does. Ruff then resolves
+      # the first-party packages relative to the repository (not the workspace), so
+      # imports of the own package are sorted the same way locally and in CI.
       - id: ruff-check
         args:
           - --fix
+          - --config=../../ruff.toml
       - id: ruff-format
+        args:
+          - --config=../../ruff.toml
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.1.0 # this is optional, use `pre-commit autoupdate` to get the latest rev!
+    rev: v4.1.0  # this is optional, use `pre-commit autoupdate` to get the latest rev!
     hooks:
-      - id: check-yaml
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
-      - id: check-added-large-files
+    -   id: check-yaml
+    -   id: end-of-file-fixer
+    -   id: trailing-whitespace
+    -   id: check-added-large-files
         args:
           - --maxkb=30000000
-      - id: check-ast
-      - id: check-json
-      - id: check-shebang-scripts-are-executable
-      - id: check-xml
-      - id: pretty-format-json
+    -   id: check-ast
+    -   id: check-json
+    -   id: check-shebang-scripts-are-executable
+    -   id: check-xml
+    -   id: pretty-format-json
         args:
           - --autofix
 
@@ -31,4 +37,4 @@ repos:
     hooks:
       - id: ament_uncrustify
 
-exclude: ".vscode/"
+exclude: '.vscode/'

@@ -1,50 +1,41 @@
 import torch
-import torch.nn.modules
 import torchvision
 
+_RESNETS = {
+    "18": torchvision.models.resnet18,
+    "34": torchvision.models.resnet34,
+    "50": torchvision.models.resnet50,
+    "101": torchvision.models.resnet101,
+    "152": torchvision.models.resnet152,
+    "50next": torchvision.models.resnext50_32x4d,
+    "101next": torchvision.models.resnext101_32x8d,
+    "50wide": torchvision.models.wide_resnet50_2,
+    "101wide": torchvision.models.wide_resnet101_2,
+}
 
-class vgg16bn(torch.nn.Module):
-    def __init__(self, pretrained=False):
-        super(vgg16bn, self).__init__()
-        model = list(
-            torchvision.models.vgg16_bn(pretrained=pretrained).features.children()
-        )
-        model = model[:33] + model[34:43]
-        self.model = torch.nn.Sequential(*model)
 
-    def forward(self, x):
-        return self.model(x)
+class ResNetBackbone(torch.nn.Module):
+    """ResNet feature extractor returning the outputs of layer 2, 3 and 4."""
 
+    def __init__(self, layers: str, *, pretrained: bool = False) -> None:
+        """Initialize the backbone.
 
-class resnet(torch.nn.Module):
-    def __init__(self, layers, pretrained=False):
-        super(resnet, self).__init__()
+        Args:
+            layers: The ResNet variant, e.g. "18", "34" or "50next".
+            pretrained: Load the ImageNet weights of torchvision (downloads them on
+                first use). Not required when the weights of a trained lane
+                detection checkpoint are loaded afterwards.
+        """
+        super().__init__()
         if layers == "9":
-            block = torchvision.models.resnet.BasicBlock
-            layers = [1, 1, 1, 1]
-            model = torchvision.models.ResNet(block, layers)
-        elif layers == "18":
-            model = torchvision.models.resnet18(pretrained=pretrained)
-        elif layers == "34":
-            model = torchvision.models.resnet34(pretrained=pretrained)
-        elif layers == "50":
-            model = torchvision.models.resnet50(pretrained=pretrained)
-        elif layers == "101":
-            model = torchvision.models.resnet101(pretrained=pretrained)
-        elif layers == "152":
-            model = torchvision.models.resnet152(pretrained=pretrained)
-        elif layers == "50next":
-            model = torchvision.models.resnext50_32x4d(pretrained=pretrained)
-        elif layers == "101next":
-            model = torchvision.models.resnext101_32x8d(pretrained=pretrained)
-        elif layers == "50wide":
-            model = torchvision.models.wide_resnet50_2(pretrained=pretrained)
-        elif layers == "101wide":
-            model = torchvision.models.wide_resnet101_2(pretrained=pretrained)
-        elif layers == "34fca":
-            model = torch.hub.load("cfzd/FcaNet", "fca34", pretrained=True)
+            model = torchvision.models.ResNet(
+                torchvision.models.resnet.BasicBlock, [1, 1, 1, 1]
+            )
+        elif layers in _RESNETS:
+            model = _RESNETS[layers](weights="DEFAULT" if pretrained else None)
         else:
-            raise NotImplementedError
+            msg = f"Unsupported backbone: {layers!r}"
+            raise NotImplementedError(msg)
 
         self.conv1 = model.conv1
         self.bn1 = model.bn1
@@ -55,7 +46,10 @@ class resnet(torch.nn.Module):
         self.layer3 = model.layer3
         self.layer4 = model.layer4
 
-    def forward(self, x):
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the features of layer 2, 3 and 4."""
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)

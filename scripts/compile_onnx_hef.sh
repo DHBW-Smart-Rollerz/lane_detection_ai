@@ -1,0 +1,481 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./compile_onnx_hef.sh /path/to/model.onnx /path/to/calib_dir /path/to/out_dir
+
+Inputs:
+  - model.onnx: exported ONNX model
+  - calib_dir: directory of representative images for quantization
+  - out_dir: output directory where .har/.hef are written
+
+Environment:
+  NET_NAME: network name (default: lane_detection_ai)
+  HW_ARCH:  hailo8 | hailo8l | ... (default: hailo8)
+  OPT_LEVEL: max | default (compiler optimization level, default: max)
+  CALIB_SAMPLES: number of calibration samples to use (default: 1024)
+  HAILO_CALIBSET_SIZE: calibration set size of the optimizer (default: CALIB_SAMPLES)
+  CROP_RATIO: crop_ratio of the model config (default: 1.0). The calibration images
+              are resized to (W, H / CROP_RATIO) and the bottom H rows are used,
+              like the node preprocesses its input.
+  HAILO_ALLS_EXTRA_FILE / HAILO_ALLS_EXTRA_CMDS: extra model script commands
+
+DFC CLI selection (local):
+  HAILO_DFC_HAILO_BIN: absolute path to the DFC `hailo` binary (highest priority)
+  HAILO_DFC_CONDA_ENV: conda env name to prefer if active (default: hailo_env)
+  HAILO_DFC_PREFIX:    conda env prefix path to use (e.g. /home/.../envs/hailo_env)
+
+Compiler availability:
+  - If Hailo Dataflow Compiler (DFC) is installed locally and provides `hailo parser/optimize/compiler`, this script uses it.
+  - Otherwise, set HAILO_DFC_DOCKER_IMAGE to a DFC docker image that contains the compiler CLI, e.g.:
+      HAILO_DFC_DOCKER_IMAGE=<your_dfc_image> ./compile_onnx_hef.sh model.onnx calib out
+
+Note:
+  The `hailo` command from HailoRT (v4.x) includes `run/parse-hef` but does NOT include the compiler.
+EOF
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ne 3 ]]; then
+  usage
+  exit 2
+fi
+
+# --------- User inputs ----------
+ONNX_PATH="$1"
+CALIB_DIR="$2"
+OUT_DIR="$3"
+
+NET_NAME="${NET_NAME:-lane_detection_ai}"
+HW_ARCH="${HW_ARCH:-hailo8}"
+
+# Optional: reduce effort for faster iteration vs max accuracy
+OPT_LEVEL="${OPT_LEVEL:-max}"     # max | default
+CALIB_SAMPLES="${CALIB_SAMPLES:-1024}"
+CROP_RATIO="${CROP_RATIO:-1.0}"
+# --------------------------------
+
+if [[ ! -f "${ONNX_PATH}" ]]; then
+  echo "ERROR: ONNX file not found: ${ONNX_PATH}" >&2
+  exit 2
+fi
+if [[ ! -d "${CALIB_DIR}" ]]; then
+  echo "ERROR: Calibration dir not found: ${CALIB_DIR}" >&2
+  exit 2
+fi
+if [[ "${OPT_LEVEL}" != "max" && "${OPT_LEVEL}" != "default" ]]; then
+  echo "ERROR: OPT_LEVEL must be 'max' or 'default', got: ${OPT_LEVEL}" >&2
+  exit 2
+fi
+
+mkdir -p "${OUT_DIR}"
+
+ONNX_PATH_ABS="$(realpath "${ONNX_PATH}")"
+CALIB_DIR_ABS="$(realpath "${CALIB_DIR}")"
+OUT_DIR_ABS="$(realpath "${OUT_DIR}")"
+
+HAR_PATH="${OUT_DIR_ABS}/${NET_NAME}.har"
+HAR_OPT_PATH="${OUT_DIR_ABS}/${NET_NAME}_opt.har"
+HEF_PATH="${OUT_DIR_ABS}/${NET_NAME}.hef"
+ALLS_SCRIPT="${OUT_DIR_ABS}/${NET_NAME}.alls"
+
+cat >"${ALLS_SCRIPT}" <<EOF
+# Hailo Compiler (DFC) Model Script settings
+# Generated automatically by compile_onnx_hef.sh
+EOF
+
+if [[ "${OPT_LEVEL}" == "max" ]]; then
+cat >>"${ALLS_SCRIPT}" <<EOF
+# Maximize performance & auto-layer fusion, minimizing contexts
+performance_param(compiler_optimization_level=max)
+EOF
+elif [[ "${OPT_LEVEL}" == "default" ]]; then
+cat >>"${ALLS_SCRIPT}" <<EOF
+# Default compilation, lower optimization
+performance_param(compiler_optimization_level=0)
+EOF
+fi
+
+cat >>"${ALLS_SCRIPT}" <<EOF
+# Optimizes and compresses the model before compilation (Level 2 is a standard aggressive baseline)
+model_optimization_flavor(optimization_level=2, compression_level=2)
+EOF
+
+
+
+# Optional: append extra ALLS commands (for Hailo-side preprocessing like image_resize/normalization).
+# Usage:
+#   export HAILO_ALLS_EXTRA_FILE=/abs/path/preprocess.alls
+#   export HAILO_ALLS_EXTRA_CMDS=$'normalization(...) \nimage_resize(...)'
+if [[ -n "${HAILO_ALLS_EXTRA_FILE:-}" ]]; then
+  if [[ ! -f "${HAILO_ALLS_EXTRA_FILE}" ]]; then
+    echo "ERROR: HAILO_ALLS_EXTRA_FILE does not exist: ${HAILO_ALLS_EXTRA_FILE}" >&2
+    exit 2
+  fi
+  {
+    echo ""
+    echo "# ---- appended from HAILO_ALLS_EXTRA_FILE ----"
+    cat "${HAILO_ALLS_EXTRA_FILE}"
+    echo "# ---- end appended file ----"
+  } >> "${ALLS_SCRIPT}"
+fi
+
+if [[ -n "${HAILO_ALLS_EXTRA_CMDS:-}" ]]; then
+  {
+    echo ""
+    echo "# ---- appended from HAILO_ALLS_EXTRA_CMDS ----"
+    printf "%b\n" "${HAILO_ALLS_EXTRA_CMDS}"
+    echo "# ---- end appended commands ----"
+  } >> "${ALLS_SCRIPT}"
+fi
+
+have_dfc_hailo_cli() {
+  # $1 must be a hailo binary/path
+  local hailo_bin="${1:-}"
+  [[ -n "${hailo_bin}" ]] || return 1
+  [[ -x "${hailo_bin}" ]] || return 1
+  "${hailo_bin}" help 2>/dev/null | grep -qE '(^|\s)parser(\s|$)' || return 1
+  "${hailo_bin}" help 2>/dev/null | grep -qE '(^|\s)optimize(\s|$)' || return 1
+  "${hailo_bin}" help 2>/dev/null | grep -qE '(^|\s)compiler(\s|$)' || return 1
+}
+
+select_local_hailo_dfc_bin() {
+  # Priority:
+  # 1) Explicit binary path
+  # 2) Explicit prefix
+  # 3) If the preferred conda env is active, use `command -v hailo`
+  # 4) Common default conda env path
+  local preferred_env="${HAILO_DFC_CONDA_ENV:-hailo_env}"
+
+  if [[ -n "${HAILO_DFC_HAILO_BIN:-}" ]]; then
+    echo "${HAILO_DFC_HAILO_BIN}"
+    return 0
+  fi
+
+  if [[ -n "${HAILO_DFC_PREFIX:-}" ]]; then
+    echo "${HAILO_DFC_PREFIX}/bin/hailo"
+    return 0
+  fi
+
+  if [[ "${CONDA_DEFAULT_ENV:-}" == "${preferred_env}" ]]; then
+    command -v hailo || true
+    return 0
+  fi
+
+  if [[ -x "${HOME}/anaconda3/envs/${preferred_env}/bin/hailo" ]]; then
+    echo "${HOME}/anaconda3/envs/${preferred_env}/bin/hailo"
+    return 0
+  fi
+
+  echo ""
+}
+
+WORKDIR="$(mktemp -d)"
+cleanup() {
+  rm -rf "${WORKDIR}" || true
+}
+trap cleanup EXIT
+
+# Files are written on the host in OUT_DIR_ABS. The DFC commands get the paths as
+# seen by the runner (identical locally, mounted under /work in docker).
+HAILO_BIN="$(select_local_hailo_dfc_bin)"
+if [[ -n "${HAILO_BIN}" ]] && have_dfc_hailo_cli "${HAILO_BIN}"; then
+  # Avoid login shells here (they may trigger unrelated env scripts).
+  RUNNER=(bash -c)
+  DFC_CMD="${HAILO_BIN}"
+  RUN_OUT_DIR="${OUT_DIR_ABS}"
+elif [[ -n "${HAILO_DFC_DOCKER_IMAGE:-}" ]]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: docker not found, but HAILO_DFC_DOCKER_IMAGE is set." >&2
+    exit 2
+  fi
+  RUNNER=(docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -v "${OUT_DIR_ABS}:/work/out" \
+    -w /work \
+    "${HAILO_DFC_DOCKER_IMAGE}" bash -lc)
+  DFC_CMD="hailo"
+  RUN_OUT_DIR="/work/out"
+else
+  echo "ERROR: Hailo Dataflow Compiler (DFC) CLI not found." >&2
+  echo "The 'hailo' command of HailoRT (run/parse-hef) cannot compile ONNX to HEF." >&2
+  echo "" >&2
+  echo "Make the DFC available with ONE of:" >&2
+  echo "  - Activate its conda env and re-run:  conda activate ${HAILO_DFC_CONDA_ENV:-hailo_env}" >&2
+  echo "  - Point to the env prefix: export HAILO_DFC_PREFIX=/path/to/envs/${HAILO_DFC_CONDA_ENV:-hailo_env}" >&2
+  echo "  - Point to the binary: export HAILO_DFC_HAILO_BIN=/path/to/envs/${HAILO_DFC_CONDA_ENV:-hailo_env}/bin/hailo" >&2
+  echo "  - Use docker: export HAILO_DFC_DOCKER_IMAGE=<your_dfc_image>" >&2
+  exit 2
+fi
+
+CALIB_NPY="${OUT_DIR_ABS}/${NET_NAME}_calib.npy"
+PATCHED_ONNX="${OUT_DIR_ABS}/${NET_NAME}_hailo.onnx"
+CALIBSET_SIZE="${HAILO_CALIBSET_SIZE:-${CALIB_SAMPLES}}"
+
+# Force optimizer calibration-set size explicitly. Some DFC versions default to 64
+# unless `model_optimization_config(calibration, calibset_size=...)` is provided.
+cat >>"${ALLS_SCRIPT}" <<EOF
+
+# Calibration dataset usage
+model_optimization_config(calibration, calibset_size=${CALIBSET_SIZE})
+EOF
+
+echo "[0/3] Build calibration set (.npy) from ${CALIB_DIR_ABS}"
+# DFC expects a .npy file of pre-processed images shaped: (N, H, W, C)
+# We'll derive H/W from the ONNX input shape and load RGB uint8 images.
+# Use the DFC conda env for the helper scripts if it exists, else the current python.
+conda_run_prefix=()
+if command -v conda >/dev/null 2>&1 \
+  && conda env list | awk '{print $1}' | grep -qx "${HAILO_DFC_CONDA_ENV:-hailo_env}"; then
+  conda_run_prefix=(conda run -n "${HAILO_DFC_CONDA_ENV:-hailo_env}")
+fi
+
+CALIB_SCRIPT="${WORKDIR}/build_calib_set.py"
+cat >"${CALIB_SCRIPT}" <<'PY'
+import glob
+import os
+import sys
+
+import cv2
+import numpy as np
+import onnx
+
+
+def main() -> int:
+  if len(sys.argv) != 6:
+    print("Usage: build_calib_set.py <onnx_path> <calib_dir> <out_npy> <max_samples> <crop_ratio>", file=sys.stderr)
+    return 2
+
+  onnx_path, calib_dir, out_path, max_samples_s, crop_ratio_s = sys.argv[1:]
+  max_samples = int(max_samples_s)
+  crop_ratio = float(crop_ratio_s)
+
+  m = onnx.load(onnx_path)
+  inp = m.graph.input[0]
+  dims = [d.dim_value for d in inp.type.tensor_type.shape.dim]
+
+  # Typical shapes: NCHW (1,3,H,W) or NHWC (1,H,W,3)
+  if len(dims) == 4 and dims[1] == 3:
+    h, w, c = int(dims[2]), int(dims[3]), 3
+  elif len(dims) == 4 and dims[3] == 3:
+    h, w, c = int(dims[1]), int(dims[2]), 3
+  else:
+    raise RuntimeError(f"Unsupported ONNX input shape: {dims}")
+
+  patterns = ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff", "*.webp"]
+  paths = []
+  for pat in patterns:
+    paths.extend(glob.glob(os.path.join(calib_dir, "**", pat), recursive=True))
+  # Deduplicate while preserving deterministic order.
+  paths = sorted(set(paths))[:max_samples]
+  if not paths:
+    raise RuntimeError(f"No calibration images found in {calib_dir}")
+
+  if len(paths) < max_samples:
+    print(f"[WARN] Requested {max_samples} calibration samples but found only {len(paths)} images.")
+
+  arr = np.empty((len(paths), h, w, c), dtype=np.uint8)
+  for i, p in enumerate(paths):
+    img = cv2.imread(p, cv2.IMREAD_COLOR)
+    if img is None:
+      raise RuntimeError(f"Failed to read image: {p}")
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    # Same as the node: resize to (W, H / crop_ratio) and use the bottom H rows
+    img = cv2.resize(img, (w, int(h / crop_ratio)), interpolation=cv2.INTER_LINEAR)
+    arr[i] = img[-h:]
+
+  os.makedirs(os.path.dirname(out_path), exist_ok=True)
+  np.save(out_path, arr)
+  print(f"Wrote calib set: {out_path}")
+  print(f"Calib shape: {arr.shape} dtype={arr.dtype}")
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
+PY
+
+"${conda_run_prefix[@]}" python "${CALIB_SCRIPT}" "${ONNX_PATH_ABS}" "${CALIB_DIR_ABS}" "${CALIB_NPY}" "${CALIB_SAMPLES}" "${CROP_RATIO}"
+
+echo "[0/3] Calibration array sanity check"
+"${conda_run_prefix[@]}" python - <<PY
+import numpy as np
+arr = np.load(r"${CALIB_NPY}")
+print(f"Loaded calib npy: shape={arr.shape}, dtype={arr.dtype}")
+PY
+
+echo "[0/3] Effective calibration config"
+echo "CALIB_SAMPLES=${CALIB_SAMPLES}"
+echo "CROP_RATIO=${CROP_RATIO}"
+echo "HAILO_CALIBSET_SIZE=${CALIBSET_SIZE}"
+echo "Using model script: ${ALLS_SCRIPT}"
+sed -n '1,200p' "${ALLS_SCRIPT}"
+
+echo "[0/3] Patch ONNX for Hailo parser (add missing kernel_shape)"
+
+PATCH_SCRIPT="${WORKDIR}/patch_onnx_for_hailo.py"
+cat >"${PATCH_SCRIPT}" <<'PY'
+import os
+import sys
+
+import onnx
+from onnx import helper
+
+
+def make_unique_name(base: str, taken: set[str]) -> str:
+  i = 1
+  while True:
+    candidate = f"{base}__ssa_{i}"
+    if candidate not in taken:
+      return candidate
+    i += 1
+
+
+def enforce_ssa_names(model: onnx.ModelProto) -> int:
+  # Tracks latest produced tensor for a logical name when exporter reused names.
+  latest_binding: dict[str, str] = {}
+  taken_names: set[str] = set()
+
+  # Reserve existing non-node-output names to avoid collisions.
+  for x in model.graph.input:
+    taken_names.add(x.name)
+  for x in model.graph.initializer:
+    taken_names.add(x.name)
+  for x in model.graph.sparse_initializer:
+    taken_names.add(x.values.name)
+    taken_names.add(x.indices.name)
+
+  renamed = 0
+  produced_once: set[str] = set()
+
+  for node in model.graph.node:
+    # Rewire inputs to latest binding if a name was redefined later.
+    for i, in_name in enumerate(list(node.input)):
+      if in_name in latest_binding:
+        node.input[i] = latest_binding[in_name]
+
+    # Ensure every node output name is unique (SSA).
+    for i, out_name in enumerate(list(node.output)):
+      if not out_name:
+        continue
+
+      if out_name not in produced_once and out_name not in taken_names:
+        produced_once.add(out_name)
+        taken_names.add(out_name)
+        latest_binding[out_name] = out_name
+        continue
+
+      new_name = make_unique_name(out_name, taken_names)
+      node.output[i] = new_name
+      produced_once.add(new_name)
+      taken_names.add(new_name)
+      latest_binding[out_name] = new_name
+      renamed += 1
+
+  # Graph outputs must point to final bound tensor names.
+  for out in model.graph.output:
+    if out.name in latest_binding:
+      out.name = latest_binding[out.name]
+
+  return renamed
+
+
+def add_missing_kernel_shape(model: onnx.ModelProto) -> int:
+  init_map = {i.name: list(i.dims) for i in model.graph.initializer}
+  patched = 0
+
+  for node in model.graph.node:
+    if node.op_type not in ("Conv", "ConvTranspose"):
+      continue
+    if any(a.name == "kernel_shape" for a in node.attribute):
+      continue
+    if len(node.input) < 2:
+      continue
+
+    w_name = node.input[1]
+    w_dims = init_map.get(w_name)
+    if not w_dims or len(w_dims) < 3:
+      continue
+
+    kernel = w_dims[-2:]
+    node.attribute.extend([helper.make_attribute("kernel_shape", kernel)])
+    patched += 1
+
+  return patched
+
+
+def main() -> int:
+  if len(sys.argv) != 3:
+    print("Usage: patch_onnx_for_hailo.py <onnx_in> <onnx_out>", file=sys.stderr)
+    return 2
+
+  onnx_in, onnx_out = sys.argv[1:]
+  model = onnx.load(onnx_in)
+
+  ssa_renamed = enforce_ssa_names(model)
+  kernel_patched = add_missing_kernel_shape(model)
+
+  base = os.path.basename(onnx_out)
+  location = base + ".data"
+  onnx.save_model(
+    model,
+    onnx_out,
+    save_as_external_data=True,
+    all_tensors_to_one_file=True,
+    location=location,
+    size_threshold=1024,
+  )
+
+  # Validate patched model early.
+  onnx.checker.check_model(onnx_out)
+
+  print(f"Renamed duplicated tensor outputs for SSA: {ssa_renamed}")
+  print(f"Patched Conv/ConvTranspose nodes with kernel_shape: {kernel_patched}")
+  print(f"Wrote patched ONNX: {onnx_out}")
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
+PY
+
+"${conda_run_prefix[@]}" python "${PATCH_SCRIPT}" "${ONNX_PATH_ABS}" "${PATCHED_ONNX}"
+
+# Paths as seen by the DFC runner
+RUN_ONNX="${RUN_OUT_DIR}/$(basename "${PATCHED_ONNX}")"
+RUN_CALIB_NPY="${RUN_OUT_DIR}/$(basename "${CALIB_NPY}")"
+RUN_ALLS="${RUN_OUT_DIR}/$(basename "${ALLS_SCRIPT}")"
+RUN_HAR="${RUN_OUT_DIR}/$(basename "${HAR_PATH}")"
+RUN_HAR_OPT="${RUN_OUT_DIR}/$(basename "${HAR_OPT_PATH}")"
+
+echo "[1/3] Parse ONNX -> HAR"
+"${RUNNER[@]}" "\"${DFC_CMD}\" parser onnx \"${RUN_ONNX}\" --net-name \"${NET_NAME}\" --hw-arch \"${HW_ARCH}\" --har-path \"${RUN_HAR}\" -y"
+
+echo "[2/3] Optimize (quantize) HAR with calibration"
+"${RUNNER[@]}" "\"${DFC_CMD}\" optimize \"${RUN_HAR}\" --hw-arch \"${HW_ARCH}\" --calib-set-path \"${RUN_CALIB_NPY}\" --model-script \"${RUN_ALLS}\" --output-har-path \"${RUN_HAR_OPT}\""
+
+echo "[3/3] Compile optimized HAR -> HEF"
+"${RUNNER[@]}" "\"${DFC_CMD}\" compiler \"${RUN_HAR_OPT}\" --hw-arch \"${HW_ARCH}\" --model-script \"${RUN_ALLS}\" --output-dir \"${RUN_OUT_DIR}\""
+
+# Normalize output filename to ${HEF_PATH} if the compiler produced a different name.
+if [[ ! -f "${HEF_PATH}" ]]; then
+  generated_hef=$(ls -1 "${OUT_DIR_ABS}"/*.hef 2>/dev/null | head -n 1 || true)
+  if [[ -n "${generated_hef}" ]]; then
+    mv -f "${generated_hef}" "${HEF_PATH}"
+  fi
+fi
+
+if [[ ! -f "${HEF_PATH}" ]]; then
+  echo "ERROR: HEF was not produced in ${OUT_DIR_ABS}" >&2
+  echo "Check compiler output above for details." >&2
+  exit 1
+fi
+
+echo "Done."
+echo "HEF: ${HEF_PATH}"
