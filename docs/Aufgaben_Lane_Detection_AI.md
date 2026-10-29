@@ -48,6 +48,20 @@
 
   → `pred2coords` ist fast so teuer wie das Netz selbst. Laut Paper sollte der Head unter 5 % der Zeit brauchen.
 
+### 26.10.2026: Grad-CAM, Lernpfad, Update auf v0.2.0
+
+- ✅ `scripts/gradcam_lanes.py` geschrieben: zeigt pro Linie, auf welche Bildbereiche das Netz schaut (`--target loc` / `exist`)
+- ✅ Lernpfad `docs/Lernpfad_KI_Training.md` erstellt: Videos, Hyperparameter, Grad-CAM/HiResCAM, Experimentplan
+- ✅ DGX gefunden: `deep-thought` (8× H100, Slurm, Enroot). Vorlage `train_lightning.slurm` im Branch `origin/training`
+- ✅ **Sanels Hailo-8-Merge (PR #7, v0.2.0)** in `brisild` gemergt. Damit sind erledigt:
+  - Bug `image.shape[0] != 3` → jetzt `image.ndim == 2` (war Aufgabe 2)
+  - `pred2coords` vektorisiert → neues `model/decode.py` (war Aufgabe 3, Messung steht noch aus)
+  - `.hef`-Support (Hailo-8) für das Auto
+  - Neues Benchmark-Skript `scripts/benchmark_models.py`, Konvertierungs- und Kompilier-Skripte
+- ✅ Lokale `config/model_bev_config.py`: `mlp_mid_dim = 512` ergänzt (neuer Standard ist 2048, alte Modelle haben 512)
+- ✅ `gradcam_lanes.py` an die neue API angepasst (`IMAGE_MEAN/STD`, `load_checkpoint`, `decode_lanes`/`merge_lanes`)
+- ✅ Erste Grad-CAM-Beobachtung: Bei Frame 400 liegt die Heatmap der **Mittellinie** auf dem Kreuz-Symbol in der Kurve, nicht auf der Linie selbst
+
 ---
 
 ## Teil 2: Testumgebung (so starte ich alles)
@@ -85,9 +99,19 @@ Die Rate sollte ungefähr der `--rate` des Publishers entsprechen.
 
 ## Teil 3: Meine Aufgaben (in dieser Reihenfolge)
 
-### Aufgabe 1: Fehler des Modells anschauen und notieren ⬜
+### ✅ Erledigt durch Sanels Merge (v0.2.0)
 
-**Aufwand:** ca. 1 Stunde
+| Alte Aufgabe | Was passiert ist |
+|---|---|
+| ~~Aufgabe 2: Bugfix `image.shape[0]`~~ | In `model_wrapper.py` steht jetzt `if image.ndim == 2:`. Den Git-Ablauf habe ich mit dem Grad-CAM-Commit trotzdem geübt |
+| ~~Aufgabe 3: `pred2coords` vektorisieren~~ | Neues `model/decode.py`: ein numpy-Decoder ohne Python-Schleife über die Anker, für alle Backends. Nur die **Messung** fehlt noch → Aufgabe 2 |
+| ~~Hailo-Support (`.hef`)~~ | `model/hailo.py`, Backend wird über die Dateiendung gewählt |
+
+---
+
+### Aufgabe 1: Fehler des Modells anschauen und notieren 🔄
+
+**Aufwand:** ca. 1–2 Stunden
 
 **Warum:** Bevor ich etwas verbessere, muss ich wissen, *wo* das Modell schlecht ist. Sonst optimiere ich ins Blaue.
 
@@ -96,122 +120,108 @@ Die Rate sollte ungefähr der `--rate` des Publishers entsprechen.
 2. In RViz auf diese Situationen achten:
    - Kurven: Folgen die Punkte der Linie?
    - Helle Stellen und Lichtreflexe (z. B. ab Frame ~400): Entstehen Geisterlinien?
-   - Kreuzungen und Haltelinien
+   - Kreuzungen, Haltelinien, Symbole auf der Fahrbahn (Kreuz bei Frame 400!)
    - Fehlt eine Linie? Dann fehlt die Trajektorie auf der Seite
-3. Jeden Fehler in die Fehlertabelle unten eintragen. Die Bildnummer steht ungefähr im Publisher-Log.
+3. Jeden Fehler in die Fehlertabelle (Teil 4) eintragen. Die Bildnummer steht ungefähr im Publisher-Log.
+4. Für jeden Fehler-Frame Grad-CAM laufen lassen (siehe Aufgabe 3) und den Eindruck in die Spalte „Idee“ schreiben.
 
 **Fertig, wenn:** Die Fehlertabelle hat mindestens 5–10 Einträge und ich weiß, welche Fehlerart am häufigsten ist.
 
 ---
 
-### Aufgabe 2: Bugfix `image.shape[0]` + Git-Ablauf üben ⬜
+### Aufgabe 2: Neue Laufzeiten messen (`.pth` / `.onnx`) ⬜
 
-**Aufwand:** ca. 10–30 Minuten
+**Aufwand:** ca. 1–2 Stunden
 
-**Warum:** Ein kleiner, ungefährlicher Fix, um den Ablauf **ändern → testen → committen → pushen** einmal selbst zu machen.
+**Warum:** Ich will wissen, was der Umbau gebracht hat. Vorher brauchte `pred2coords` ~6,5 ms von ~20 ms.
 
-**Was ist falsch:** In `lane_detection_ai/model/model_wrapper.py`, Funktion `predict()`:
-```python
-if image.shape[0] != 3:            # prüft die BILDHÖHE, nicht die Kanäle!
-    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-```
-Das funktioniert nur zufällig, weil das Bild immer Graustufen ist. Bei einem Farbbild würde es abstürzen.
+**Was tun:**
+1. Neues Skript anschauen: `scripts/benchmark_models.py` (nutzt eine temporäre Params-Datei, `ros_params.yaml` bleibt unverändert)
+2. `.pth` und `.onnx` messen. Für `.pth` braucht die Config `mlp_mid_dim = 512` (schon ergänzt)
+3. In RViz prüfen, ob die Erkennung bei beiden gleich aussieht
+4. Werte in Teil 5 eintragen
 
-**Fix:**
-```python
-if image.ndim == 2:                # 2 Dimensionen = Graustufen (H, W)
-    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-```
-
-**Ablauf:**
-1. Datei ändern
-2. Neu bauen:
-   ```bash
-   cd ~/Documents/smarty_workspace && colcon build --symlink-install --packages-select lane_detection_ai
-   ```
-3. Testen: Node starten, Bilder abspielen, in RViz prüfen, ob alles gleich aussieht
-4. Committen und pushen:
-   ```bash
-   cd ~/Documents/smarty_workspace/src/lane_detection_ai
-   git add lane_detection_ai/model/model_wrapper.py
-   git commit -m "Fix grayscale check in model wrapper"
-   git push origin brisild
-   ```
-
-**Fertig, wenn:** Der Fix liegt auf GitHub im Branch `brisild`.
+**Fertig, wenn:** Tabelle in Teil 5 hat Werte für `.pth` und `.onnx` nach dem Update, und ich weiß, ob `pred2coords` jetzt ≤ 1 ms ist.
 
 ---
 
-### Aufgabe 3: `pred2coords` schneller machen (vektorisieren) ⬜
-
-**Aufwand:** 1–2 Tage
-
-**Warum:** Die Funktion braucht ~6,5 ms von ~20 ms pro Bild, also ein Drittel der Gesamtzeit.
-
-**Was ist das Problem:** Die Funktion läuft in einer **Python-Schleife** über jeden Anker (35 Zeilen × 3 Linien + 35 Spalten × 3 Linien = 210 Durchläufe). In jedem Durchlauf stehen viele kleine Torch-Aufrufe (`.item()`, `torch.where`, `softmax`). Jeder einzelne Aufruf hat Overhead.
-
-**Idee:** Alle Anker **auf einmal** mit Matrix-Operationen berechnen (vektorisieren):
-1. `argmax` für alle Anker gleichzeitig
-2. Die Nachbarzellen (±1) per Indexing für alle gleichzeitig holen
-3. `softmax` und Erwartungswert für alle gleichzeitig
-4. Erst ganz am Ende mit der Existenz-Maske filtern und in Punktlisten umwandeln
-
-**Wichtig, das Ergebnis muss gleich bleiben:**
-- Ein Vergleichstest prüft, ob alte und neue Funktion auf allen 1192 Bildern **dieselben Punkte** liefern
-- Erst dann die alte Version ersetzen
-
-**Fertig, wenn:**
-- Ergebnis identisch (Vergleichstest bestanden)
-- `pred2coords` liegt bei ≤ 1 ms (Messung vorher/nachher ins Protokoll)
-- Committet auf `brisild`
-
----
-
-### Aufgabe 4: ONNX gegen PyTorch vergleichen ⬜
+### Aufgabe 3: Grad-CAM / HiResCAM für die Fehleranalyse ⬜
 
 **Aufwand:** ½ Tag
 
-**Warum:** Dasselbe Modell liegt auch als `models/best_model_bev.onnx` vor. ONNX Runtime ist auf der CPU oft schneller.
+**Warum:** Grad-CAM zeigt, *warum* das Modell einen Fehler macht (worauf es schaut). Daraus leite ich ab, welche Trainingsdaten fehlen. Details: [Lernpfad, Kapitel 6](Lernpfad_KI_Training.md#6-grad-cam-und-hirescam-ins-modell-hineinschauen).
 
 **Was tun:**
-1. Prüfen, ob die ONNX-Config richtig in `config/` liegt (die Datei `model_onnx_bev_config.py` ist bisher nur in `models/`)
-2. In `config/ros_params.yaml` `model_config_path` umstellen und neu bauen
-3. Den `inference`-Wert vergleichen und in RViz prüfen, ob die Erkennung gleich gut ist
-4. Ergebnis in die Vergleichstabelle im Protokoll (Kapitel 7) eintragen
+1. Skript auf die Fehler-Frames aus Aufgabe 1 laufen lassen:
+   ```bash
+   cd ~/Documents/smarty_workspace/src/lane_detection_ai
+   PYTHONPATH=. ~/.pyenv/versions/default/bin/python3 scripts/gradcam_lanes.py --frames 395,400,405 --target loc
+   PYTHONPATH=. ~/.pyenv/versions/default/bin/python3 scripts/gradcam_lanes.py --frames 395,400,405 --target exist --layer layer2
+   ```
+2. HiResCAM als Option `--method gradcam|hirescam` einbauen (eine Zeile Unterschied, siehe Lernpfad 6.3)
+3. Grad-CAM und HiResCAM nebeneinander vergleichen
+4. Frame 400 genauer anschauen: Schaut die Mittellinie wirklich auf das Kreuz-Symbol?
 
-**Achtung:** `config/ros_params.yaml` hat schon eine Änderung von jemand anderem. Vorher mit dem Team klären, welche Config auf dem Auto laufen soll.
-
-**Fertig, wenn:** Tabelle mit ms/Bild für `.pth` und `.onnx` ausgefüllt, Empfehlung notiert.
+**Fertig, wenn:** Zu jedem Fehler in der Fehlertabelle gibt es eine Vermutung, *warum* er passiert. HiResCAM-Option ist committet.
 
 ---
 
-### Aufgabe 5: Offene Fragen ans Team klären ⬜ (parallel zu allem)
+### Aufgabe 4: Fallback, wenn eine Linie fehlt ⬜
+
+**Aufwand:** ½ Tag
+
+**Warum:** In `lane_detection_ai_node.py` (Abschnitt `polyfit`) wird eine Fahrspur nur gebaut, wenn **beide** Nachbarlinien erkannt wurden. Sonst bleibt sie `[0, 0, 0]`. Fehlt die Mittellinie kurz, hat das Auto für **beide** Spuren keine Trajektorie.
+
+**Idee:**
+- Linke + Mitte da → wie bisher Mittelwert
+- Nur eine der beiden da → diese Linie um die halbe Spurbreite verschieben. Nach `bird_to_world` sind die Punkte in Metern, das Polynom ist `x = a·y² + b·y + c`, also reicht es, `c` zu verschieben
+- Spurbreite als ROS-Parameter in `ros_params.yaml` (vorher am Auto/in der Simulation messen)
+
+**Fertig, wenn:** Bei fehlender Mittellinie gibt es trotzdem plausible Trajektorien (in RViz geprüft), committet auf `brisild`.
+
+---
+
+### Aufgabe 5: Robusterer Polyfit ⬜
+
+**Aufwand:** ½ Tag
+
+**Warum:** `np.polyfit` läuft auch bei ganz wenigen Punkten. Ein einzelner falscher Punkt (z. B. von einem Reflex) verbiegt das ganze Polynom.
+
+**Was tun:**
+1. Mindestanzahl an Punkten verlangen (z. B. ≥ 5), sonst Linie als „nicht erkannt“ behandeln
+2. Ausreißer filtern, z. B. mit RANSAC oder einem zweiten Fit ohne die Punkte mit dem größten Fehler
+3. Mit den Fehler-Frames aus Aufgabe 1 vorher/nachher vergleichen
+
+**Fertig, wenn:** Einzelne Ausreißer verbiegen die Linie sichtbar weniger, committet auf `brisild`.
+
+---
+
+### Aufgabe 6: Offene Fragen ans Team klären 🔄 (parallel zu allem)
 
 **Warum:** Ohne diese Antworten kann ich nicht trainieren und nicht auf dem Auto testen.
 
 - ⬜ Darf ich den Branch `origin/training` nutzen? Wer kennt sich damit aus?
-- ⬜ **DGX-Zugang:** Adresse, Account, wie starte ich Slurm-Jobs?
+- 🔄 **DGX-Zugang:** Server ist `deep-thought`, mein Account `inf24039` funktioniert. Offen: Welche Partition darf ich nutzen? Wo liegen Container (`.sqsh`) und Datensatz? (Das Slurm-Skript enthält noch Pfade von `inf23174`/`sanel`)
 - ⬜ Wo liegen der **Datensatz** (`smartrollerz_bev`) und die **Rosbags** (NAS)?
 - ⬜ Mit welchem Tool wird gelabelt? (Vermutlich CVAT, siehe `convert_cvat_bev.slurm`)
 - ⬜ Wann kann ich **am echten Auto** testen? Auf welchem Rechner ist die Kamera (NUC)?
-- ⬜ Welche `ros_params.yaml` soll gelten, `.pth` oder `.onnx`?
-- ⬜ Ist eine **Hailo-Karte** verbaut?
+- ⬜ Welche `ros_params.yaml` soll gelten: `.pth`, `.onnx` oder `.hef`?
+- ⬜ Ist eine **Hailo-8-Karte im Auto** verbaut? (In meinem Rechner ist keine.)
 - ⬜ Welche **Val-F1-Werte** haben die bisherigen Modelle?
+- ⬜ **2026-Modell:** Backbone `9` oder `18`? In der Config stehen zwei Optuna-Blöcke (Trial 15 und 23), welcher ist der richtige?
 
 ---
 
-### Spätere Aufgaben (nach 1–5) ⬜
+### Spätere Aufgaben (nach 1–6) ⬜
 
 | Aufgabe | Warum | Aufwand |
 |---|---|---|
-| **Fallback bei fehlender Linie** | Fehlt Mitte oder Rand, ist die Trajektorie `[0,0,0]`. Besser wäre: die vorhandene Linie um eine feste Spurbreite verschieben | ½ Tag |
-| **Ausreißer filtern vor `polyfit`** | Einzelne falsche Punkte verbiegen das Polynom (z. B. mit RANSAC) | ½ Tag |
-| **Echte Hybrid-Anker** | Aktuell werden Zeilen- und Spalten-Punkte gemischt. Laut Paper sollte jede Linie nur *einen* Anker-Typ nutzen | 1 Tag |
-| **Kalman-Filter / Glättung** | Linien zittern von Bild zu Bild. Glättung über die Zeit | 1–2 Tage |
+| **`.hef` gegen `.pth` vergleichen** | Durch die Quantisierung (int8) kann die Genauigkeit sinken. Dieselben Eval-Bilder mit beiden auswerten und Punkte vergleichen | ½ Tag |
+| **Glättung über die Zeit** | Linien zittern von Bild zu Bild. Erst einfaches exponentielles Mittel der Koeffizienten, später Kalman-Filter | 1–2 Tage |
+| **Echte Hybrid-Anker** | `merge_lanes` in `decode.py` mischt noch Zeilen- und Spalten-Punkte. Laut Paper sollte jede Linie nur *einen* Anker-Typ nutzen | 1 Tag |
 | **RViz-Marker** | Linien zusätzlich als 3D-Marker in Metern anzeigen, nicht nur im Bild | ½ Tag |
-| **2026-Modell einbinden** | Größeres Modell (512×384, Optuna-optimiert). Anker-Formel prüfen! | 1–2 Tage |
-| **Hailo-Support (`.hef`)** | Inferenz auf dem KI-Beschleuniger, Branch `hailo-8-accelerator` anschauen | 2–3 Tage |
-| **Neu trainieren** | Mit eigenen Fehlerfällen als zusätzlichen Trainingsdaten auf der DGX | offen |
+| **2026-Modell einbinden** | Größeres Modell (512×384, Optuna-optimiert, mit Augmentation). `mlp_mid_dim = 512` ist schon in der Config. Anker-Formel prüfen! | 1–2 Tage |
+| **Neu trainieren** | Mit eigenen Fehlerfällen als zusätzlichen Trainingsdaten auf `deep-thought`. Plan: [Lernpfad, Kapitel 7](Lernpfad_KI_Training.md#7-experimentplan-meine-ersten-trainingsläufe) | offen |
 | **Test am echten Auto** | Am Ende zählt, wie das Auto fährt | laufend |
 
 ---
@@ -220,7 +230,7 @@ if image.ndim == 2:                # 2 Dimensionen = Graustufen (H, W)
 
 | # | Bild / Frame | Situation | Was ist falsch | Linie | Idee |
 |---|---|---|---|---|---|
-| 1 | | | | | |
+| 1 | 400 | Kurve mit Kreuz-Symbol | Grad-CAM: Heatmap der Mittellinie liegt auf dem Kreuz, nicht auf der Linie (in RViz noch prüfen) | Mitte | Mehr Bilder mit Fahrbahn-Symbolen? Mit HiResCAM gegenprüfen |
 | 2 | | | | | |
 | 3 | | | | | |
 | 4 | | | | | |
@@ -236,5 +246,6 @@ if image.ndim == 2:                # 2 Dimensionen = Graustufen (H, W)
 | Datum | Änderung | Rechner | `inference` ms | `pred2coords` ms | `total` ms | Bemerkung |
 |---|---|---|---|---|---|---|
 | 22.10.2026 | Ausgangszustand (`.pth`) | Laptop | ~8 | ~6,5 | ~20 | Debug an |
-| | | | | | | |
+| | Nach v0.2.0 (`.pth`, neues `decode.py`) | Laptop | | | | Aufgabe 2 |
+| | Nach v0.2.0 (`.onnx`) | Laptop | | | | Aufgabe 2 |
 | | | | | | | |

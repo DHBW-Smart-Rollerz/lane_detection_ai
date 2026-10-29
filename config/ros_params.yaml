@@ -2,7 +2,7 @@
 lane_detection_ai_node:
   ros__parameters:
     # Path of the model config
-    model_config_path: "config/model_bev_config.py"
+    model_config_path: "config/model_bev_2026_config.py"
 
     # CvBridge desired encoding.
     # Use "8UC1" for grayscale, or "bgr8" for color (recommended if model trained on RGB/BGR).
