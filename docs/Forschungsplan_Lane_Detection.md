@@ -165,6 +165,33 @@ Der Validierungs-Loss fiel bis zum Ende mit dem Trainings-Loss mit (2,80 bzw. 2,
 2. **Es gibt kein unabhängiges Test-Set.** Auch die Vorgänger haben auf dem Set gemessen, mit dem sie das beste Modell ausgewählt haben (S. 49).
 3. **Der F1 misst keine Stabilität über die Zeit.** Ein Modell kann einen hohen F1 haben und trotzdem zittern. Deshalb braucht es zusätzlich die Sprung-Messung.
 
+### 3.7 Frontansicht-Datensatz (01.11.2026)
+
+Vom Team kam ein neuer Datenstand mit drei Varianten (lokal unter `models/data/data/`):
+
+| Variante | Bildgröße | Gelabelte Bilder | Bewertung |
+|---|---|---|---|
+| `smartrollerz` (Frontansicht, volles Kamerabild) | 2064 × 1544 | 3086 (35 Sessions, nur 2023) | konsistent: Bild, Maske und Label-Cache passen zusammen → **verwendet** |
+| `smartrollerz_crop` (Frontansicht, beschnitten) | 1564 × 1044 | 3086 (dieselben Bilder) | Masken sind 1864 × 1344, also **anders groß als die Bilder** → vorerst nicht verwendet, beim Team nachfragen |
+| `smartrollerz_bev` | 1364 × 944 | – | Labels identisch mit dem bisherigen `labels.zip` → **nichts Neues** für BEV |
+
+- Die Labels der Frontansicht liegen direkt vor (`labels/train_gt.txt` + `smartrollerz_anno_cache.json`, 3 Linien × 65 Zeilen). `convert_cvat.py` muss also nicht neu laufen.
+- Für 05/2025 gibt es **keine** Front-Labels (`2025-05.xml` fehlt im Front-Export).
+- Die Dateien `eval_vid*.txt` und `eval_2025-03-06.txt` sind nur Bildlisten **ohne** Labels (Videos für Sichtprüfung und Stabilitätsmessung).
+- **Aufteilung:** dieselben drei 2023-Sessions wie bei BEV zurückgehalten (`2023-05-24-17-55-35`, `2023-06-28-15-20-08`, `2023-12-19-15-11-20`) → 2752 Training, 334 Validierung. Damit sind BEV- und Front-Modell auf **denselben Aufnahmen** vergleichbar (BEV zusätzlich mit 84 Bildern aus 05/2025).
+
+### 3.8 Training ResNet-9 Frontansicht (Teilfrage 1)
+
+Ziel: Gleiches Backbone und gleiche Hyperparameter wie die BEV-Baseline (3.4), **nur die Eingabe ändert sich**. So lässt sich der Unterschied BEV ↔ Front direkt der Ansicht zuordnen.
+
+- Config `configs/smartrollerz_res9_front.py` = `smartrollerz_res9_bev.py` mit drei Änderungen:
+  - `data_root = "dataset/smartrollerz_front"`
+  - `original_image_width/height = 2064 / 1544`
+  - Verschiebe-Augmentierung **relativ zur Bildgröße gleich** wie bei BEV: `aug_translate_x = 227` (150/1364 ≈ 11 % der Breite), `aug_translate_y = 49` (30/944 ≈ 3 % der Höhe). Skalierung, Rotation, Helligkeit und Kontrast unverändert.
+- Slurm-Skript `train_front_pyxis.slurm` (Kopie von `train_pyxis.slurm` mit Front-Config und Front-Datenordner).
+- Hochgeladen wurden nur die gelabelten Bilder, Masken und Labels (≈ 4,6 GB statt 11,8 GB).
+- Ergebnis: _ausstehend_.
+
 ---
 
 ## 4. Neue Ausrichtung: Frontansicht und alternative Backbones
@@ -278,8 +305,8 @@ Bewertet wird jeder Kandidat **in BEV und in der Frontansicht** nach: F1 (faires
 | 4 | Unabhängiges Test-Set festlegen und in CVAT labeln (Licht, Kurven, normal) | ⬜ |
 | 5 | Verdeckungs-Test-Set automatisch aus dem Test-Set erzeugen (Skript) | ⬜ |
 | 6 | Ausgangswerte des 2026-Modells auf allen Test-Sets messen („Vorher“) | ⬜ |
-| 7 | Frontansicht-Datensatz erzeugen (`convert_cvat.py`) | ⬜ |
-| 8 | ResNet-9 **Front** gegen ResNet-9 **BEV** trainieren und vergleichen (Teilfrage 1) | ⬜ |
+| 7 | Frontansicht-Datensatz bereitstellen | ✅ 01.11.2026 (Labels lagen bereits vor, siehe 3.7) |
+| 8 | ResNet-9 **Front** gegen ResNet-9 **BEV** trainieren und vergleichen (Teilfrage 1) | 🔄 Training läuft (3.8) |
 | 9 | MobileNetV3 / YOLOv5: ONNX-Export reparieren, mit DFC kompilieren, Kontexte prüfen | ⬜ |
 | 10 | Backbone-Vergleich (Teilfrage 2), jeweils mit INT8-Emulator | ⬜ |
 | 11 | Verdeckungs- und Licht-Augmentierung (Teilfrage 3) | ⬜ |
@@ -295,7 +322,9 @@ Bewertet wird jeder Kandidat **in BEV und in der Frontansicht** nach: F1 (faires
 - Welche Bilder waren im Training des 2026-Modells? (wichtig, um ein wirklich unabhängiges Test-Set zu wählen)
 - Wo liegen DFC-Container und Kalibrierbilder für `scripts/compile_pth_to_hef.slurm`?
 - Welche Paketversionen hatte die Trainingsumgebung (`pip freeze`)?
-- Gibt es Labels für die Frontansicht direkt, oder nur über `convert_cvat.py`?
+- ~~Gibt es Labels für die Frontansicht direkt?~~ Ja, im neuen Datenstand (3.7).
+- Warum sind die Masken in `smartrollerz_crop` größer als die beschnittenen Bilder, und wofür war der Crop gedacht?
+- Wo sind die Front-Labels für 05/2025 (Polfilter-Aufnahmen)?
 - Woran ist der ONNX-Export von MobileNetV3/YOLOv5s genau gescheitert (Fehlermeldung)?
 
 ---
@@ -324,7 +353,9 @@ Bewertet wird jeder Kandidat **in BEV und in der Frontansicht** nach: F1 (faires
 | `unpack_dataset.slurm` | Entpackt `labels.zip`, `data.zip`, `rosbags.zip` nach `dataset/smartrollerz_bev` und setzt die Aufteilung |
 | `eval_weights.py`, `eval_models.slurm` | F1 mehrerer Gewichtsdateien auf demselben Validierungs-Set (5 Wiederholungen) |
 | `configs/smartrollerz_res9_bev.py` | ResNet-18-BEV-Config mit `backbone = "9"`, `mlp_mid_dim = 512` |
+| `configs/smartrollerz_res9_front.py`, `train_front_pyxis.slurm` | dasselbe für die Frontansicht (3.8) |
 | `dataset/split/` | `train_gt.txt` / `eval_gt.txt` der Session-Aufteilung, Original als `train_gt_full.txt` |
+| `dataset/smartrollerz_front/`, `dataset/split_front/` | Front-Datensatz (nur gelabelte Bilder) und seine Aufteilung |
 | `results/<datum>_lr_…/best_weights.pth` | bestes Modell eines Laufs |
 | `results/mlruns/` | MLflow-Daten (Kurven aller Läufe) |
 | `~/brisild/containers/lane_detection_ai_training.sqsh` | Trainings-Container (14 GB) |
